@@ -10,6 +10,7 @@ from ..tools import (
     contribution_analysis,
     fault_onset_timing,
     granger_causality,
+    knowledge_guided_root_cause_decision,
     pca_monitoring,
     pre_post_shift_evidence,
     process_diagnosis,
@@ -50,6 +51,7 @@ class ProcessDiagnosticPipeline:
         onset_z_threshold: float = 3.5,
         onset_persistence: int = 3,
         diagnosis_threshold: float = 0.35,
+        use_knowledge_catalog: bool = True,
     ):
         self.variance_target = variance_target
         self.control_alpha = control_alpha
@@ -58,6 +60,7 @@ class ProcessDiagnosticPipeline:
         self.onset_z_threshold = onset_z_threshold
         self.onset_persistence = onset_persistence
         self.diagnosis_threshold = diagnosis_threshold
+        self.use_knowledge_catalog = use_knowledge_catalog
 
     @staticmethod
     def _causal_input(x: np.ndarray, stationarity: dict[str, Any]) -> tuple[np.ndarray, list[int]]:
@@ -189,12 +192,32 @@ class ProcessDiagnosticPipeline:
         artifacts["root_cause_rank"] = ranking
         trace.append("root_cause_rank_enhanced")
 
-        diagnosis = process_diagnosis(
-            ranking["root_cause_ranking"],
-            ranking["propagation_paths"],
-            fault_catalog=fault_catalog,
-            confidence_threshold=self.diagnosis_threshold,
-        )
+        contribution_scores = {names[i]: float(v) for i, v in enumerate(contributions["variable_contributions"])}
+        if self.use_knowledge_catalog and fault_catalog and isinstance(fault_catalog, dict) and "faults" in fault_catalog:
+            kg = knowledge_guided_root_cause_decision(
+                ranking["root_cause_ranking"],
+                fault_catalog,
+                shift_scores=shift["shift_scores"],
+                contribution_scores=contribution_scores,
+                onset_order=onset["onset_order"],
+            )
+            artifacts["knowledge_guided_root_cause"] = kg
+            trace.append("knowledge_guided_root_cause_decision")
+            diagnosis = {
+                "fault_label": kg["fault_label"] if kg["confidence"] >= self.diagnosis_threshold else None,
+                "root_cause": kg["root_cause"] if kg["confidence"] >= self.diagnosis_threshold else None,
+                "confidence": kg["confidence"],
+                "abstain_reason": None if kg["confidence"] >= self.diagnosis_threshold else "knowledge_guided_evidence_below_threshold",
+                "affected_variables": sorted({v for path in ranking["propagation_paths"] for v in path if v != kg.get("root_cause")}),
+                "propagation_paths": ranking["propagation_paths"],
+            }
+        else:
+            diagnosis = process_diagnosis(
+                ranking["root_cause_ranking"],
+                ranking["propagation_paths"],
+                fault_catalog=fault_catalog,
+                confidence_threshold=self.diagnosis_threshold,
+            )
         artifacts["process_diagnosis"] = diagnosis
         trace.append("process_diagnosis")
 

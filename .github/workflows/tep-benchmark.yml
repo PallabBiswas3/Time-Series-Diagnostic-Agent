@@ -39,7 +39,7 @@ jobs:
             --persistence-grid 1,2,3,5 \
             --lags-grid 1,2,3 \
             --diagnostic-method dpca \
-            --diagnostic-faults 4 5 6 14 15 21 \
+            --diagnostic-faults 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 \
             --diagnostic-top-k 8 \
             --maxlag 1 \
             --output outputs/tep_benchmark.json \
@@ -65,8 +65,9 @@ jobs:
                       f"DR={row['post_fault_detection_rate']:.3f} "
                       f"FAR={row['pre_fault_false_alarm_rate']:.3f} "
                       f"delay={row['detection_delay_samples']} "
+                      f"pred_fault={row.get('predicted_fault_id')} "
                       f"root={row['predicted_root_cause']} "
-                      f"proxy_hit={row['localization_hit']}"
+                      f"root_hit={row['localization_hit']}"
                   )
           PY
           fi
