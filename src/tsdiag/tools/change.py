@@ -56,31 +56,46 @@ def cross_sensor_relationships(signal_matrix, channel_names=None, relationship_p
     return {"correlations": relationships, "relationship_shift_scores": shifts}
 
 
+def _robust_scale(seg: np.ndarray) -> np.ndarray:
+    center = np.nanmedian(seg, axis=0)
+    mad = np.nanmedian(np.abs(seg - center), axis=0) * 1.4826
+    fallback = np.nanstd(seg, axis=0)
+    return np.where(mad > 1e-9, mad, np.where(fallback > 1e-9, fallback, 1e-9))
+
+
 def change_point_detection(residuals, timestamps=None, min_size: int = 20, z_threshold: float = 4.0, regime_ids=None, variance_model=None):
     """Deterministic robust mean-shift detector using left/right median contrasts.
 
-    This is intentionally dependency-light and serves as the baseline against
-    which more advanced PELT/BOCPD methods can later be compared.
+    The contrast is normalized by *within-window* robust noise rather than a global
+    scale. A global MAD can become inflated by the very regime shift we are trying
+    to detect, which suppresses clear step changes. This remains a simple baseline
+    for later PELT/BOCPD comparisons.
     """
     x = _as_2d(residuals)
     n, d = x.shape
     if n < 2 * min_size + 1:
         return {"change_points": [], "change_magnitudes": []}
-    scale = np.nanmedian(np.abs(x - np.nanmedian(x, axis=0)), axis=0) * 1.4826
-    scale = np.where(scale < 1e-9, np.nanstd(x, axis=0) + 1e-9, scale)
+
     candidates = []
     for i in range(min_size, n - min_size):
-        left = np.nanmedian(x[i - min_size:i], axis=0)
-        right = np.nanmedian(x[i:i + min_size], axis=0)
-        score = np.max(np.abs(right - left) / scale)
+        left_seg = x[i - min_size:i]
+        right_seg = x[i:i + min_size]
+        left = np.nanmedian(left_seg, axis=0)
+        right = np.nanmedian(right_seg, axis=0)
+        left_scale = _robust_scale(left_seg)
+        right_scale = _robust_scale(right_seg)
+        pooled = np.sqrt(0.5 * (left_scale**2 + right_scale**2)) + 1e-12
+        contrast = np.abs(right - left)
+        score = float(np.nanmax(contrast / pooled))
         if score >= z_threshold:
-            candidates.append((i, float(score), np.abs(right - left)))
-    # Non-maximum suppression: keep strongest point within one min_size neighborhood.
+            candidates.append((i, score, contrast))
+
     selected = []
     for idx, score, mag in sorted(candidates, key=lambda z: z[1], reverse=True):
         if all(abs(idx - kept[0]) >= min_size for kept in selected):
             selected.append((idx, score, mag))
     selected.sort(key=lambda z: z[0])
+
     cps = []
     mags = []
     for idx, score, mag in selected:
