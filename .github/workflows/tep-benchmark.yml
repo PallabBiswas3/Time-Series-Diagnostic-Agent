@@ -42,6 +42,7 @@ jobs:
             --diagnostic-faults 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 \
             --diagnostic-top-k 8 \
             --maxlag 1 \
+            --run-ablation \
             --output outputs/tep_benchmark.json \
             --artifact-dir outputs/tep_benchmark
 
@@ -57,6 +58,8 @@ jobs:
           print(json.dumps(result["summary"], indent=2))
           print("\nCalibration:")
           print(json.dumps({k: v["config"] for k, v in result["calibration"].items()}, indent=2))
+          print("\nRoot-cause ablation:")
+          print(json.dumps(result.get("ablation", {}).get("summary", {}), indent=2))
           print("\nPer-fault method rows:")
           for row in result["faults"]:
               if row["fault_id"] != 0:

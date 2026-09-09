@@ -20,11 +20,15 @@ from ..datasets.tep import (
 from ..datasets.tep_knowledge import TEP_FAULT_SPECS, tep_fault_catalog, tep_topology
 from ..domains.process_runner import ProcessDiagnosticPipeline
 from ..evaluation.reporting import (
+    write_ablation_plots,
+    write_ablation_table,
     write_detection_plots,
+    write_fault_confusion_matrix,
     write_fault_table,
     write_json_report,
     write_markdown_summary,
 )
+from ..evaluation.tep_ablation import run_tep_root_cause_ablation, summarize_tep_ablation
 from ..tools import (
     MonitoringConfig,
     calibrate_monitoring_config,
@@ -73,6 +77,7 @@ class TEPBenchmarkResult:
     faults: list[TEPFaultMethodResult]
     summary: dict[str, Any]
     artifacts: dict[str, str]
+    ablation: dict[str, Any]
 
 
 def _parse_ids(values: list[str] | None, default):
@@ -192,7 +197,13 @@ def _summarize(rows: list[TEPFaultMethodResult], methods: list[str]) -> dict[str
         post_rates = [r.post_fault_detection_rate for r in faulty if r.post_fault_detection_rate is not None]
         delays = [r.detection_delay_samples for r in faulty if r.detection_delay_samples is not None]
         localization = [r for r in faulty if r.localization_hit is not None]
-        fault_id_matches = [r for r in faulty if r.predicted_fault_id is not None and r.fault_id in TEP_FAULT_SPECS and TEP_FAULT_SPECS[r.fault_id].expected_roots]
+        fault_id_matches = [
+            r
+            for r in faulty
+            if r.predicted_fault_id is not None
+            and r.fault_id in TEP_FAULT_SPECS
+            and TEP_FAULT_SPECS[r.fault_id].expected_roots
+        ]
         summary[method] = {
             "mean_pre_fault_false_alarm_rate": float(np.mean([r.pre_fault_false_alarm_rate for r in group])) if group else None,
             "mean_post_fault_detection_rate": float(np.mean(post_rates)) if post_rates else None,
@@ -235,9 +246,17 @@ def _table_rows(results: list[TEPFaultMethodResult]) -> list[dict[str, Any]]:
                 "predicted_fault_id": r.predicted_fault_id,
                 "predicted_fault_label": r.predicted_fault_label,
                 "decision_source": r.decision_source,
+                "abstain_reason": r.abstain_reason,
             }
         )
     return rows
+
+
+def _choose_ablation_row(rows: list[dict[str, Any]], variant: str = "topology_catalog") -> dict[str, Any] | None:
+    for row in rows:
+        if row.get("variant") == variant:
+            return row
+    return rows[-1] if rows else None
 
 
 class TEPBenchmark:
@@ -296,6 +315,7 @@ class TEPBenchmark:
         diagnostic_method: str = "dpca",
         output_dir: str | Path | None = None,
         write_plots: bool = True,
+        run_ablation: bool = False,
     ) -> TEPBenchmarkResult:
         data_dir = Path(data_dir)
         reference = load_tep_reference(data_dir)
@@ -309,6 +329,8 @@ class TEPBenchmark:
         catalog = tep_fault_catalog()
         topology = tep_topology()
         results: list[TEPFaultMethodResult] = []
+        ablation_rows: list[dict[str, Any]] = []
+
         for fault_id in [int(x) for x in fault_ids]:
             current = load_tep_dat(data_dir / f"d{fault_id:02d}_te.dat")
             standardized = standardize_against_normal(current, reference)
@@ -342,29 +364,57 @@ class TEPBenchmark:
                     selected_names = [TEP_CHANNEL_NAMES[i] for i in candidate_idx]
                     subset_current = current[:, candidate_idx]
                     subset_reference = reference[:, candidate_idx]
-                    pipeline = ProcessDiagnosticPipeline(
-                        variance_target=self.variance_target,
-                        control_alpha=cfg.alpha,
-                        maxlag=self.maxlag,
-                        onset_persistence=max(2, cfg.min_consecutive),
-                        diagnosis_threshold=0.18,
-                        use_knowledge_catalog=True,
-                    )
-                    diagnosis = pipeline.run(
-                        subset_current,
-                        subset_reference,
-                        selected_names,
-                        process_topology=topology,
-                        fault_catalog=catalog,
-                    )
-                    predicted_root = diagnosis.root_cause
-                    confidence = diagnosis.confidence
-                    predicted_label = diagnosis.fault_label
-                    abstain_reason = diagnosis.abstain_reason
-                    kg = diagnosis.artifacts.get("knowledge_guided_root_cause", {})
-                    predicted_fault_id = kg.get("fault_id")
-                    decision_source = kg.get("decision_source")
-                    localization_hit = predicted_root in targets if predicted_root and targets else None
+
+                    if run_ablation:
+                        ablation = run_tep_root_cause_ablation(
+                            subset_current,
+                            subset_reference,
+                            selected_names,
+                            monitored["alarm_mask"],
+                            fault_id=fault_id,
+                            expected_roots=targets,
+                            process_topology=topology,
+                            fault_catalog=catalog,
+                            variance_target=self.variance_target,
+                            control_alpha=cfg.alpha,
+                            maxlag=self.maxlag,
+                            onset_persistence=max(2, cfg.min_consecutive),
+                            confidence_threshold=0.18,
+                        )
+                        ablation_rows.extend(ablation["rows"])
+                        chosen = _choose_ablation_row(ablation["rows"], "topology_catalog")
+                        if chosen:
+                            predicted_root = chosen.get("predicted_root")
+                            confidence = chosen.get("confidence")
+                            predicted_label = chosen.get("predicted_fault_label")
+                            predicted_fault_id = chosen.get("predicted_fault_id")
+                            decision_source = chosen.get("decision_source")
+                            abstain_reason = chosen.get("abstain_reason")
+                            localization_hit = chosen.get("root_hit")
+                    else:
+                        pipeline = ProcessDiagnosticPipeline(
+                            variance_target=self.variance_target,
+                            control_alpha=cfg.alpha,
+                            maxlag=self.maxlag,
+                            onset_persistence=max(2, cfg.min_consecutive),
+                            diagnosis_threshold=0.18,
+                            use_knowledge_catalog=True,
+                        )
+                        diagnosis = pipeline.run(
+                            subset_current,
+                            subset_reference,
+                            selected_names,
+                            process_topology=topology,
+                            fault_catalog=catalog,
+                        )
+                        predicted_root = diagnosis.root_cause
+                        confidence = diagnosis.confidence
+                        predicted_label = diagnosis.fault_label
+                        abstain_reason = diagnosis.abstain_reason
+                        kg = diagnosis.artifacts.get("knowledge_guided_root_cause", {})
+                        predicted_fault_id = kg.get("fault_id")
+                        decision_source = kg.get("decision_source")
+                        localization_hit = predicted_root in targets if predicted_root and targets else None
 
                 results.append(
                     TEPFaultMethodResult(
@@ -391,14 +441,23 @@ class TEPBenchmark:
                 )
 
         summary = _summarize(results, list(self.methods))
+        ablation_summary = summarize_tep_ablation(ablation_rows) if ablation_rows else {}
+        if ablation_summary:
+            summary["root_cause_ablation"] = ablation_summary
+
         artifacts: dict[str, str] = {}
         if output_dir is not None:
             out = Path(output_dir)
             rows = _table_rows(results)
             artifacts["fault_table_csv"] = str(write_fault_table(rows, out / "tep_fault_table.csv"))
-            artifacts["summary_md"] = str(write_markdown_summary(summary, rows, out / "tep_summary.md"))
+            if ablation_rows:
+                artifacts["ablation_table_csv"] = str(write_ablation_table(ablation_rows, out / "tep_root_cause_ablation.csv"))
+            artifacts["summary_md"] = str(write_markdown_summary(summary, rows, out / "tep_summary.md", ablation_rows=ablation_rows))
             if write_plots:
                 plot_paths = write_detection_plots(rows, out / "plots")
+                if ablation_rows:
+                    plot_paths.extend(write_ablation_plots(ablation_rows, out / "plots"))
+                    plot_paths.extend(write_fault_confusion_matrix(ablation_rows, out / "plots", variant="topology_catalog"))
                 artifacts["plots"] = ",".join(str(p) for p in plot_paths)
 
         return TEPBenchmarkResult(
@@ -411,6 +470,7 @@ class TEPBenchmark:
             faults=results,
             summary=summary,
             artifacts=artifacts,
+            ablation={"rows": ablation_rows, "summary": ablation_summary},
         )
 
 
@@ -429,6 +489,7 @@ def main():
     parser.add_argument("--alpha-grid", default="0.99,0.995,0.9975,0.999,0.9995")
     parser.add_argument("--persistence-grid", default="1,2,3,5")
     parser.add_argument("--lags-grid", default="1,2,3")
+    parser.add_argument("--run-ablation", action="store_true", help="compare generic/topology/catalog root-cause variants")
     parser.add_argument("--output", default="outputs/tep_benchmark.json")
     parser.add_argument("--artifact-dir", default="outputs/tep_benchmark")
     parser.add_argument("--no-plots", action="store_true")
@@ -459,6 +520,7 @@ def main():
         diagnostic_method=args.diagnostic_method,
         output_dir=args.artifact_dir,
         write_plots=not args.no_plots,
+        run_ablation=args.run_ablation,
     )
 
     output = Path(args.output)
@@ -466,6 +528,9 @@ def main():
     print(json.dumps(result.summary, indent=2))
     print("Calibration:")
     print(json.dumps({k: v["config"] for k, v in result.calibration.items()}, indent=2, default=str))
+    if result.ablation.get("summary"):
+        print("Root-cause ablation:")
+        print(json.dumps(result.ablation["summary"], indent=2, default=str))
     print(f"saved: {output}")
     for key, value in result.artifacts.items():
         print(f"artifact {key}: {value}")
