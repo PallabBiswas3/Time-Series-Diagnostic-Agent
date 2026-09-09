@@ -28,9 +28,9 @@ Dataset files are downloaded at benchmark time rather than committed into this r
 For each selected test fault:
 
 1. fit healthy-reference normalization from `d00.dat`
-2. build the PCA normal subspace from the same healthy reference
+2. calibrate PCA/DPCA monitoring on held-out normal data
 3. calculate T2 and SPE/Q-style statistics
-4. derive 99% limits from the healthy reference
+4. apply calibrated quantile limits and alarm persistence
 5. calculate false alarm rate on samples 0..159
 6. calculate post-fault detection rate on samples 160..end
 7. record first post-fault alarm and detection delay
@@ -39,22 +39,41 @@ This is deliberately a transparent deterministic baseline.
 
 ## Root-cause / localization benchmark
 
-The original public archive provides fault scenario IDs and descriptions, but it does **not** provide a canonical measured-variable root-cause label for every fault. We therefore do not report a misleading universal `root_cause_accuracy`.
+The original public archive provides fault scenario IDs and descriptions, but it does **not** provide a canonical measured-variable root-cause label for every fault. We therefore avoid reporting a misleading universal root-cause ground truth.
 
-Instead, a conservative subset of faults has explicit engineering **proxy localization targets**. Examples include cooling-water manipulated variables for valve-sticking faults and the A-feed variables for A-feed loss. These proxies are clearly labeled as benchmark proxies, not canonical ground truth.
+Instead, `tsdiag.datasets.tep_knowledge` contains a conservative TEP knowledge base:
 
-For those cases:
+- variable descriptions for `XMEAS` and `XMV`
+- IDV(1)-IDV(21) fault catalog entries
+- expected root-variable priors for faults where the mechanism is known
+- affected-variable neighbourhoods
+- a sparse directed process-topology prior
 
-1. rank all 52 variables using PCA residual contribution
-2. retain the top-k candidate channels
-3. run stationarity analysis
-4. difference flagged channels before Granger screening
-5. estimate directed predictive links
-6. estimate per-channel anomaly onset
-7. rank candidate root causes from contribution + onset + causal influence
-8. compare the top root-cause candidate against the declared engineering proxy set
+These expected roots are engineering evaluation proxies, not simulator-perfect causal labels.
 
-The benchmark reports this separately as `proxy_localization_accuracy`.
+## Root-cause ablation protocol
+
+The benchmark can compare four root-cause variants:
+
+| Variant | Evidence used | Purpose |
+|---|---|---|
+| `generic` | PCA contribution + onset timing + Granger + pre/post shift | Tests pure data-driven RCA. |
+| `topology_only` | Generic RCA + sparse TEP topology filter | Tests whether process structure helps. |
+| `catalog_only` | Generic RCA + TEP fault catalog | Tests whether known fault mechanisms help. |
+| `topology_catalog` | Generic RCA + topology + catalog | Tests the full knowledge-guided RCA path. |
+
+The true IDV label is used only after prediction for scoring. During prediction the method sees the full TEP catalog, not the true fault ID.
+
+Reported ablation metrics:
+
+- root top-1 accuracy against proxy roots
+- root top-3 accuracy
+- catalog fault-ID accuracy
+- abstention rate
+- false-confident diagnosis rate
+- mean confidence
+
+The benchmark also writes a fault-ID confusion matrix for the full `topology_catalog` variant.
 
 ## Run locally
 
@@ -64,15 +83,28 @@ pip install -e ".[dev]"
 python -m tsdiag.benchmarks.tep \
   --download \
   --faults 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 \
-  --diagnostic-faults 4 5 6 14 15 21 \
-  --diagnostic-top-k 6 \
+  --methods pca dpca \
+  --target-far 0.05 \
+  --diagnostic-method dpca \
+  --diagnostic-faults 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 \
+  --diagnostic-top-k 8 \
   --maxlag 1 \
-  --output outputs/tep_benchmark.json
+  --run-ablation \
+  --output outputs/tep_benchmark.json \
+  --artifact-dir outputs/tep_benchmark
 ```
+
+Outputs include:
+
+- `outputs/tep_benchmark.json`
+- `outputs/tep_benchmark/tep_fault_table.csv`
+- `outputs/tep_benchmark/tep_root_cause_ablation.csv`
+- `outputs/tep_benchmark/tep_summary.md`
+- detection, delay, ablation and confusion-matrix plots under `outputs/tep_benchmark/plots/`
 
 ## CI
 
-`.github/workflows/tep-benchmark.yml` downloads the public benchmark data, runs the project tests, evaluates all 21 TEP faults for detection, runs the bounded root-cause stage on the proxy-labeled subset, and uploads `tep_benchmark.json` as a workflow artifact.
+`.github/workflows/tep-benchmark.yml` downloads the public benchmark data, runs the project tests, evaluates all 21 TEP faults for detection, runs the root-cause ablation, and uploads the benchmark artifacts.
 
 ## Interpretation
 
@@ -86,4 +118,4 @@ A high post-fault detection rate is not enough by itself. We care about the trad
 - abstention / uncertainty
 - computational cost
 
-The real-data benchmark is intended to expose weaknesses in the current deterministic process pipeline before an adaptive or LLM-based controller is introduced.
+The root-cause ablation is the first check of the actual research claim: whether topology and fault-catalog knowledge improve diagnosis beyond generic contribution/Granger scoring. If the full knowledge-guided variant does not improve over generic RCA, the next step is not to add an LLM; it is to improve the TEP topology, fault catalog and scoring formulation.
