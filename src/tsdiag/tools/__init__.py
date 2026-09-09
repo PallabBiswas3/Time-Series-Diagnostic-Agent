@@ -30,7 +30,7 @@ from .monitoring import (
     run_monitoring_method,
 )
 from .process import causal_graph_filter, fault_onset_timing, process_diagnosis, root_cause_rank
-from .process_enhanced import pre_post_shift_evidence, root_cause_rank_enhanced
+from .process_enhanced import pre_post_shift_evidence, root_cause_rank_enhanced, temporal_fault_type_evidence
 from .tep_reasoning import knowledge_guided_root_cause_decision, rank_tep_fault_catalog
 from .change import change_point_detection, cross_sensor_relationships, rolling_statistics
 from .wavelet import (
@@ -52,7 +52,7 @@ __all__ = [
     "calibrated_pca_monitoring", "dpca_monitoring", "make_lagged_matrix",
     "run_monitoring_method", "causal_graph_filter", "fault_onset_timing",
     "root_cause_rank", "root_cause_rank_enhanced", "pre_post_shift_evidence",
-    "rank_tep_fault_catalog", "knowledge_guided_root_cause_decision",
+    "temporal_fault_type_evidence", "rank_tep_fault_catalog", "knowledge_guided_root_cause_decision",
     "process_diagnosis", "rolling_statistics", "cross_sensor_relationships",
     "change_point_detection", "wavelet_denoising", "cross_correlation_analysis",
     "correlation_sensor_weighting", "multisensor_fusion", "default_tool_registry",

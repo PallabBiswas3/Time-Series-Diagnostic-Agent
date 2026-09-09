@@ -96,6 +96,143 @@ def pre_post_shift_evidence(
     }
 
 
+def _safe_slope(values: np.ndarray) -> float:
+    if values.size < 3:
+        return 0.0
+    t = np.linspace(-0.5, 0.5, values.size)
+    denom = float(np.dot(t, t))
+    if denom <= 1e-12:
+        return 0.0
+    centered = values - np.nanmedian(values)
+    return float(np.dot(t, centered) / denom)
+
+
+def temporal_fault_type_evidence(
+    signal_matrix,
+    channel_names=None,
+    *,
+    alarm_mask=None,
+    baseline_fraction: float = 0.2,
+    top_k: int = 8,
+) -> dict[str, Any]:
+    """Estimate a coarse TEP fault-type signature from time-series shape.
+
+    This is a blind diagnostic feature: it uses only the signal, reference-like
+    pre-fault region and alarm timing. It does not use the true IDV label. The
+    scores are intended as weak catalog priors to separate faults with similar
+    affected variables, e.g. cooling-water step/random/sticking cases.
+    """
+    x = _as_2d(signal_matrix)
+    n, d = x.shape
+    names = list(channel_names) if channel_names is not None else [f"ch{i}" for i in range(d)]
+    if len(names) != d:
+        raise ValueError("channel_names length mismatch")
+
+    split = max(10, int(round(n * baseline_fraction)))
+    if alarm_mask is not None:
+        alarm = np.asarray(alarm_mask, dtype=bool).ravel()
+        if alarm.shape[0] != n:
+            raise ValueError("alarm_mask length mismatch")
+        idx = np.flatnonzero(alarm)
+        if idx.size and idx[0] >= 10:
+            split = int(idx[0])
+    split = min(max(10, split), n - 3)
+
+    pre = x[:split]
+    post = x[split:]
+    if post.shape[0] < 3:
+        post = x[max(0, n // 2) :]
+    if post.shape[0] < 3:
+        return {
+            "split_index": split,
+            "top_channels": [],
+            "metrics": {},
+            "fault_type_scores": {
+                "step": 0.0,
+                "random_variation": 0.0,
+                "slow_drift": 0.0,
+                "valve_sticking": 0.0,
+                "constant_position": 0.0,
+                "unknown": 1.0,
+            },
+        }
+
+    center = np.nanmedian(pre, axis=0)
+    mad = np.nanmedian(np.abs(pre - center), axis=0)
+    scale = np.where(1.4826 * mad > 1e-12, 1.4826 * mad, np.nanstd(pre, axis=0))
+    scale = np.where(scale > 1e-12, scale, 1.0)
+    z_pre = (pre - center) / scale
+    z_post = (post - center) / scale
+
+    median_shift = np.abs(np.nanmedian(z_post, axis=0))
+    pre_std = np.nanstd(z_pre, axis=0) + 1e-12
+    post_std = np.nanstd(z_post, axis=0) + 1e-12
+    var_change = np.abs(np.log(np.maximum(post_std / pre_std, 1e-12)))
+    ranking_score = median_shift + 0.35 * var_change
+    order = np.argsort(ranking_score)[::-1][: max(1, min(int(top_k), d))]
+
+    if order.size == 0:
+        order = np.arange(d)
+    zp = z_post[:, order]
+
+    thirds = np.array_split(zp, 3, axis=0)
+    early_level = float(np.nanmedian(np.abs(thirds[0]))) if thirds[0].size else 0.0
+    late_level = float(np.nanmedian(np.abs(thirds[-1]))) if thirds[-1].size else 0.0
+    sustained = 1.0 - min(1.0, abs(late_level - early_level) / (max(late_level, early_level, 1e-12)))
+
+    mean_shift_strength = float(np.tanh(np.nanmean(median_shift[order]) / 3.0))
+    var_strength = float(np.tanh(np.nanmean(var_change[order]) / 1.5))
+    slopes = np.array([_safe_slope(zp[:, j]) for j in range(zp.shape[1])], dtype=float)
+    slope_strength = float(np.tanh(np.nanmedian(np.abs(slopes)) / 2.5))
+
+    diffs = np.diff(zp, axis=0)
+    denom = np.nanstd(zp, axis=0) + 1e-12
+    volatility = float(np.tanh(np.nanmedian(np.nanstd(diffs, axis=0) / denom) / 1.5))
+    persistent_extreme = float(np.nanmean(np.abs(zp) > 3.0))
+    flatness = float(np.nanmean(np.abs(diffs) < 0.03)) if diffs.size else 0.0
+    valve_focus = float(np.mean([str(names[int(i)]).startswith("XMV(") for i in order]))
+
+    # Weak, bounded type priors. They should help separate catalog neighbours,
+    # not override direct root evidence.
+    step_score = mean_shift_strength * (0.65 + 0.35 * sustained) * (1.0 - 0.45 * slope_strength)
+    random_score = (0.55 * var_strength + 0.45 * volatility) * (1.0 - 0.35 * sustained)
+    drift_score = slope_strength * (0.45 + 0.55 * (1.0 - sustained))
+    sticking_score = 0.55 * flatness + 0.30 * persistent_extreme + 0.15 * valve_focus
+    constant_score = 0.50 * flatness + 0.25 * persistent_extreme + 0.25 * valve_focus
+
+    raw_scores = {
+        "step": float(max(0.0, step_score)),
+        "random_variation": float(max(0.0, random_score)),
+        "slow_drift": float(max(0.0, drift_score)),
+        "valve_sticking": float(max(0.0, sticking_score)),
+        "constant_position": float(max(0.0, constant_score)),
+    }
+    max_score = max(raw_scores.values()) if raw_scores else 0.0
+    if max_score <= 1e-12:
+        scores = {k: 0.0 for k in raw_scores}
+        scores["unknown"] = 1.0
+    else:
+        scores = {k: float(v / max_score) for k, v in raw_scores.items()}
+        # Unknown remains plausible when no type has clear support.
+        scores["unknown"] = float(max(0.0, 1.0 - max_score))
+
+    return {
+        "split_index": split,
+        "top_channels": [names[int(i)] for i in order],
+        "metrics": {
+            "mean_shift_strength": mean_shift_strength,
+            "variance_change_strength": var_strength,
+            "slope_strength": slope_strength,
+            "volatility_strength": volatility,
+            "persistent_extreme_fraction": persistent_extreme,
+            "flatness_fraction": flatness,
+            "valve_channel_fraction": valve_focus,
+            "sustained_level_score": sustained,
+        },
+        "fault_type_scores": scores,
+    }
+
+
 def _paths_from(root: str, edges: list[dict[str, Any]], max_depth: int = 5) -> list[list[str]]:
     adjacency: dict[str, list[str]] = defaultdict(list)
     for edge in edges:

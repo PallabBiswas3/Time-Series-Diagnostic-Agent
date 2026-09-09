@@ -17,6 +17,7 @@ from ..tools import (
     root_cause_rank_enhanced,
     standardize_against_normal,
     stationarity_analysis,
+    temporal_fault_type_evidence,
 )
 
 
@@ -121,6 +122,7 @@ def _catalog_prediction(
     shift_scores: dict[str, float],
     contribution_scores: dict[str, float],
     onset_order: Iterable[str],
+    fault_type_scores: dict[str, float],
     threshold: float,
 ) -> dict[str, Any]:
     kg = knowledge_guided_root_cause_decision(
@@ -129,19 +131,23 @@ def _catalog_prediction(
         shift_scores=shift_scores,
         contribution_scores=contribution_scores,
         onset_order=onset_order,
+        fault_type_scores=fault_type_scores,
         threshold=threshold,
     )
     confidence = float(kg.get("confidence", 0.0) or 0.0)
-    abstain_reason = None if confidence >= threshold else "catalog_evidence_below_threshold"
+    abstain_reason = kg.get("abstain_reason")
+    if not abstain_reason and confidence < threshold:
+        abstain_reason = "catalog_evidence_below_threshold"
     return {
-        "predicted_root": kg.get("root_cause") if abstain_reason is None else None,
-        "top3_roots": [str(x) for x in kg.get("ranked_variables", [])[:3]],
+        "predicted_root": kg.get("root_cause"),
+        "top3_roots": [str(x) for x in kg.get("ranked_roots", kg.get("ranked_variables", []))[:3]],
         "predicted_fault_id": kg.get("fault_id") if abstain_reason is None else None,
         "predicted_fault_label": kg.get("fault_label") if abstain_reason is None else None,
         "confidence": confidence,
         "decision_source": kg.get("decision_source", "tep_fault_catalog"),
         "abstain_reason": abstain_reason,
         "catalog_ranking": kg.get("catalog_ranking", []),
+        "catalog_margin": kg.get("catalog_margin"),
     }
 
 
@@ -226,6 +232,7 @@ def run_tep_root_cause_ablation(
 
     contributions = contribution_analysis(z, pca["pca_state"], alarm)
     shift = pre_post_shift_evidence(z, names, alarm_mask=alarm)
+    type_evidence = temporal_fault_type_evidence(z, names, alarm_mask=alarm)
     stationarity = stationarity_analysis(z)
     causal_matrix, differenced_channels = _causal_input(z, stationarity)
     granger = granger_causality(causal_matrix, names, maxlag=maxlag, alpha=granger_alpha)
@@ -279,6 +286,7 @@ def run_tep_root_cause_ablation(
             shift_scores=shift["shift_scores"],
             contribution_scores=contribution_scores,
             onset_order=onset["onset_order"],
+            fault_type_scores=type_evidence["fault_type_scores"],
             threshold=confidence_threshold,
         )
         raw_predictions["topology_catalog"] = _catalog_prediction(
@@ -287,6 +295,7 @@ def run_tep_root_cause_ablation(
             shift_scores=shift["shift_scores"],
             contribution_scores=contribution_scores,
             onset_order=onset["onset_order"],
+            fault_type_scores=type_evidence["fault_type_scores"],
             threshold=confidence_threshold,
         )
 
@@ -309,6 +318,8 @@ def run_tep_root_cause_ablation(
             "selected_channels": names,
             "contribution_ranking": [names[int(i)] for i in np.argsort(contributions["variable_contributions"])[::-1][:5]],
             "shift_ranking": shift["ranked_variables"][:5],
+            "fault_type_scores": type_evidence["fault_type_scores"],
+            "fault_type_metrics": type_evidence["metrics"],
             "onset_order": onset["onset_order"][:5],
             "generic_top3": _top_roots(ranking_generic),
             "topology_top3": _top_roots(ranking_topology),
