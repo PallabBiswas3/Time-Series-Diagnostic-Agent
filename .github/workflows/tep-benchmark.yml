@@ -11,7 +11,7 @@ on:
 jobs:
   tep-real-data:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -28,15 +28,22 @@ jobs:
       - name: Unit tests
         run: pytest -q
 
-      - name: Run canonical Braatz TEP benchmark
+      - name: Run calibrated Braatz TEP benchmark
         run: |
           python -m tsdiag.benchmarks.tep \
             --download \
             --faults 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 \
+            --methods pca dpca \
+            --target-far 0.05 \
+            --alpha-grid 0.99,0.995,0.9975,0.999,0.9995 \
+            --persistence-grid 1,2,3,5 \
+            --lags-grid 1,2,3 \
+            --diagnostic-method dpca \
             --diagnostic-faults 4 5 6 14 15 21 \
-            --diagnostic-top-k 6 \
+            --diagnostic-top-k 8 \
             --maxlag 1 \
-            --output outputs/tep_benchmark.json
+            --output outputs/tep_benchmark.json \
+            --artifact-dir outputs/tep_benchmark
 
       - name: Show benchmark summary
         if: always()
@@ -48,11 +55,13 @@ jobs:
           p = Path("outputs/tep_benchmark.json")
           result = json.loads(p.read_text())
           print(json.dumps(result["summary"], indent=2))
-          print("\nPer-fault detection rates:")
+          print("\nCalibration:")
+          print(json.dumps({k: v["config"] for k, v in result["calibration"].items()}, indent=2))
+          print("\nPer-fault method rows:")
           for row in result["faults"]:
               if row["fault_id"] != 0:
                   print(
-                      f"IDV({row['fault_id']:02d}) "
+                      f"{row['method']} IDV({row['fault_id']:02d}) "
                       f"DR={row['post_fault_detection_rate']:.3f} "
                       f"FAR={row['pre_fault_false_alarm_rate']:.3f} "
                       f"delay={row['detection_delay_samples']} "
@@ -67,5 +76,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tep-benchmark-result
-          path: outputs/tep_benchmark.json
+          path: |
+            outputs/tep_benchmark.json
+            outputs/tep_benchmark/**
           if-no-files-found: warn
