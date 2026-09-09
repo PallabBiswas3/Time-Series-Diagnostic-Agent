@@ -14,6 +14,12 @@ from .multivariate import (
     standardize_against_normal,
     stationarity_analysis,
 )
+from .process import (
+    causal_graph_filter,
+    fault_onset_timing,
+    process_diagnosis,
+    root_cause_rank,
+)
 from .signal import (
     bandpass_filter,
     envelope_spectrum,
@@ -50,6 +56,10 @@ def default_tool_registry() -> ToolRegistry:
         "contribution_analysis": contribution_analysis,
         "stationarity_analysis": stationarity_analysis,
         "granger_causality": granger_causality,
+        "causal_graph_filter": causal_graph_filter,
+        "fault_onset_timing": fault_onset_timing,
+        "root_cause_rank": root_cause_rank,
+        "process_diagnosis": process_diagnosis,
         "operating_regime_detection": detect_operating_regimes,
         "operating_condition_identification": detect_operating_regimes,
         "regime_normalization": regime_normalization,
