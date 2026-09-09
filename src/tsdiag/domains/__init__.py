@@ -1,5 +1,6 @@
 from .bearing import BEARING_PACK
 from .process import PROCESS_PACK
+from .process_runner import ProcessDiagnosticPipeline, ProcessDiagnosticResult
 from .wind_scada import WIND_SCADA_PACK
 from .battery import BATTERY_PACK
 from .turbofan import TURBOFAN_PACK
@@ -28,6 +29,8 @@ def get_domain_pack(key: str):
 __all__ = [
     "BEARING_PACK",
     "PROCESS_PACK",
+    "ProcessDiagnosticPipeline",
+    "ProcessDiagnosticResult",
     "WIND_SCADA_PACK",
     "BATTERY_PACK",
     "TURBOFAN_PACK",
