@@ -35,6 +35,16 @@ def _expected_roots(record: dict[str, Any]) -> list[str]:
     return [str(root)] if root else []
 
 
+def _choose_best_root(roots: list[str], score_map: dict[str, float]) -> str | None:
+    if not roots:
+        return None
+    primary = roots[0]
+    primary_score = score_map.get(primary, 0.0)
+    if primary_score > 0.05:
+        return primary
+    return max(roots, key=lambda root: score_map.get(root, 0.0))
+
+
 def rank_tep_fault_catalog(
     ranked_variables: Iterable[str],
     fault_catalog: Any,
@@ -63,7 +73,7 @@ def rank_tep_fault_catalog(
 
         root_scores = [score_map.get(root, 0.0) for root in roots]
         root_score = max(root_scores) if root_scores else 0.0
-        best_root = roots[int(np.argmax(root_scores))] if root_scores else None
+        best_root = _choose_best_root(roots, score_map)
 
         affected_scores = [score_map.get(var, 0.0) for var in affected]
         affected_mean = float(np.mean(affected_scores)) if affected_scores else 0.0
