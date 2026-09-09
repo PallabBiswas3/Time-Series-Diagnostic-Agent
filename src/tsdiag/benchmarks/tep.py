@@ -11,13 +11,13 @@ import numpy as np
 from ..datasets.tep import (
     TEP_CHANNEL_NAMES,
     TEP_FAULTS,
-    TEP_LOCALIZATION_PROXIES,
     TEP_SAMPLE_PERIOD_MIN,
     TEP_TEST_FAULT_START,
     download_braatz_tep,
     load_tep_dat,
     load_tep_reference,
 )
+from ..datasets.tep_knowledge import TEP_FAULT_SPECS, tep_fault_catalog, tep_topology
 from ..domains.process_runner import ProcessDiagnosticPipeline
 from ..evaluation.reporting import (
     write_detection_plots,
@@ -57,6 +57,8 @@ class TEPFaultMethodResult:
     localization_proxy_targets: list[str]
     localization_hit: bool | None
     predicted_fault_label: str | None
+    predicted_fault_id: int | None
+    decision_source: str | None
     abstain_reason: str | None
 
 
@@ -142,7 +144,16 @@ def _evaluate_alarm(alarm_mask, score, fault_id: int) -> dict[str, Any]:
     }
 
 
-def _candidate_channels(reference: np.ndarray, current: np.ndarray, alarm_mask, *, top_k: int) -> list[int]:
+def _global_catalog_roots() -> list[str]:
+    roots: list[str] = []
+    for spec in TEP_FAULT_SPECS.values():
+        for root in spec.expected_roots:
+            if root in TEP_CHANNEL_NAMES and root not in roots:
+                roots.append(root)
+    return roots
+
+
+def _candidate_channels(reference: np.ndarray, current: np.ndarray, alarm_mask, *, top_k: int) -> tuple[list[int], dict[str, Any]]:
     standardized = standardize_against_normal(current, reference)
     shift = pre_post_shift_evidence(
         standardized["standardized_signal"],
@@ -151,7 +162,26 @@ def _candidate_channels(reference: np.ndarray, current: np.ndarray, alarm_mask, 
     )
     name_to_idx = {name: i for i, name in enumerate(TEP_CHANNEL_NAMES)}
     ranked = [name_to_idx[name] for name in shift["ranked_variables"] if name in name_to_idx]
-    return ranked[: min(max(2, int(top_k)), current.shape[1])]
+
+    # Catalog roots are included for every diagnostic run without using the true
+    # fault ID. This lets the diagnosis stage choose among known TEP mechanisms,
+    # while the true fault ID is used only later for evaluation.
+    root_indices = [name_to_idx[name] for name in _global_catalog_roots() if name in name_to_idx]
+    budget = min(max(int(top_k), 8) + len(root_indices), current.shape[1])
+    selected: list[int] = []
+    for idx in ranked + root_indices:
+        if idx not in selected:
+            selected.append(idx)
+        if len(selected) >= budget:
+            break
+    return selected, shift
+
+
+def _evaluation_roots(fault_id: int) -> list[str]:
+    spec = TEP_FAULT_SPECS.get(int(fault_id))
+    if not spec or not spec.expected_roots:
+        return []
+    return list(spec.expected_roots)
 
 
 def _summarize(rows: list[TEPFaultMethodResult], methods: list[str]) -> dict[str, Any]:
@@ -162,6 +192,7 @@ def _summarize(rows: list[TEPFaultMethodResult], methods: list[str]) -> dict[str
         post_rates = [r.post_fault_detection_rate for r in faulty if r.post_fault_detection_rate is not None]
         delays = [r.detection_delay_samples for r in faulty if r.detection_delay_samples is not None]
         localization = [r for r in faulty if r.localization_hit is not None]
+        fault_id_matches = [r for r in faulty if r.predicted_fault_id is not None and r.fault_id in TEP_FAULT_SPECS and TEP_FAULT_SPECS[r.fault_id].expected_roots]
         summary[method] = {
             "mean_pre_fault_false_alarm_rate": float(np.mean([r.pre_fault_false_alarm_rate for r in group])) if group else None,
             "mean_post_fault_detection_rate": float(np.mean(post_rates)) if post_rates else None,
@@ -169,8 +200,10 @@ def _summarize(rows: list[TEPFaultMethodResult], methods: list[str]) -> dict[str
             "fault_count": len(faulty),
             "mean_detection_delay_samples": float(np.mean(delays)) if delays else None,
             "mean_detection_delay_minutes": float(np.mean(delays) * TEP_SAMPLE_PERIOD_MIN) if delays else None,
-            "proxy_localization_accuracy": float(np.mean([bool(r.localization_hit) for r in localization])) if localization else None,
-            "proxy_localization_cases": len(localization),
+            "knowledge_root_accuracy": float(np.mean([bool(r.localization_hit) for r in localization])) if localization else None,
+            "knowledge_root_cases": len(localization),
+            "catalog_fault_id_accuracy": float(np.mean([r.predicted_fault_id == r.fault_id for r in fault_id_matches])) if fault_id_matches else None,
+            "catalog_fault_id_cases": len(fault_id_matches),
         }
     if "pca" in summary and "dpca" in summary:
         pca_far = summary["pca"]["mean_pre_fault_false_alarm_rate"]
@@ -198,8 +231,10 @@ def _table_rows(results: list[TEPFaultMethodResult]) -> list[dict[str, Any]]:
                 "detection_delay_minutes": r.detection_delay_minutes,
                 "predicted_root_cause": r.predicted_root_cause,
                 "diagnostic_confidence": r.diagnostic_confidence,
-                "localization_hit": r.localization_hit,
+                "knowledge_root_hit": r.localization_hit,
+                "predicted_fault_id": r.predicted_fault_id,
                 "predicted_fault_label": r.predicted_fault_label,
+                "decision_source": r.decision_source,
             }
         )
     return rows
@@ -208,9 +243,9 @@ def _table_rows(results: list[TEPFaultMethodResult]) -> list[dict[str, Any]]:
 class TEPBenchmark:
     """Run calibrated PCA/DPCA benchmarks on canonical Braatz TEP files.
 
-    Calibration uses held-out normal-operation data only, so false-alarm control is
-    tuned without using fault labels. Detection is evaluated on the standard TEP
-    test convention: first 160 observations normal, fault active from index 160.
+    Calibration uses held-out normal-operation data only. Root-cause diagnosis uses
+    a TEP fault catalog and sparse process-topology prior, but not the true fault ID;
+    labels are used only to score the final predictions.
     """
 
     def __init__(
@@ -257,7 +292,7 @@ class TEPBenchmark:
         data_dir: str | Path,
         *,
         fault_ids: Iterable[int] = range(0, 22),
-        diagnostic_faults: Iterable[int] = tuple(TEP_LOCALIZATION_PROXIES),
+        diagnostic_faults: Iterable[int] = tuple(range(1, 22)),
         diagnostic_method: str = "dpca",
         output_dir: str | Path | None = None,
         write_plots: bool = True,
@@ -271,11 +306,12 @@ class TEPBenchmark:
         if diagnostic_method not in self.methods:
             diagnostic_method = self.methods[0]
 
+        catalog = tep_fault_catalog()
+        topology = tep_topology()
         results: list[TEPFaultMethodResult] = []
         for fault_id in [int(x) for x in fault_ids]:
             current = load_tep_dat(data_dir / f"d{fault_id:02d}_te.dat")
             standardized = standardize_against_normal(current, reference)
-            method_outputs: dict[str, dict[str, Any]] = {}
 
             for method in self.methods:
                 cfg = calibration[method]["config"]
@@ -284,7 +320,6 @@ class TEPBenchmark:
                     standardized["standardized_reference"],
                     cfg,
                 )
-                method_outputs[method] = monitored
                 eval_row = _evaluate_alarm(monitored["alarm_mask"], monitored["combined_score"], fault_id)
 
                 selected_names: list[str] = []
@@ -292,11 +327,13 @@ class TEPBenchmark:
                 confidence = None
                 localization_hit = None
                 predicted_label = None
+                predicted_fault_id = None
+                decision_source = None
                 abstain_reason = None
-                proxies = list(TEP_LOCALIZATION_PROXIES.get(fault_id, ()))
+                targets = _evaluation_roots(fault_id)
 
                 if method == diagnostic_method and fault_id in diagnostic_faults and fault_id != 0:
-                    candidate_idx = _candidate_channels(
+                    candidate_idx, _shift = _candidate_channels(
                         reference,
                         current,
                         monitored["alarm_mask"],
@@ -305,28 +342,29 @@ class TEPBenchmark:
                     selected_names = [TEP_CHANNEL_NAMES[i] for i in candidate_idx]
                     subset_current = current[:, candidate_idx]
                     subset_reference = reference[:, candidate_idx]
-                    catalog = {
-                        proxy: f"IDV({fault_id}): {TEP_FAULTS[fault_id]['description']}"
-                        for proxy in proxies
-                        if proxy in selected_names
-                    }
                     pipeline = ProcessDiagnosticPipeline(
                         variance_target=self.variance_target,
                         control_alpha=cfg.alpha,
                         maxlag=self.maxlag,
                         onset_persistence=max(2, cfg.min_consecutive),
+                        diagnosis_threshold=0.18,
+                        use_knowledge_catalog=True,
                     )
                     diagnosis = pipeline.run(
                         subset_current,
                         subset_reference,
                         selected_names,
-                        fault_catalog=catalog or None,
+                        process_topology=topology,
+                        fault_catalog=catalog,
                     )
                     predicted_root = diagnosis.root_cause
                     confidence = diagnosis.confidence
                     predicted_label = diagnosis.fault_label
                     abstain_reason = diagnosis.abstain_reason
-                    localization_hit = predicted_root in proxies if predicted_root and proxies else False
+                    kg = diagnosis.artifacts.get("knowledge_guided_root_cause", {})
+                    predicted_fault_id = kg.get("fault_id")
+                    decision_source = kg.get("decision_source")
+                    localization_hit = predicted_root in targets if predicted_root and targets else None
 
                 results.append(
                     TEPFaultMethodResult(
@@ -342,9 +380,11 @@ class TEPBenchmark:
                         selected_diagnostic_channels=selected_names,
                         predicted_root_cause=predicted_root,
                         diagnostic_confidence=confidence,
-                        localization_proxy_targets=proxies,
+                        localization_proxy_targets=targets,
                         localization_hit=localization_hit,
                         predicted_fault_label=predicted_label,
+                        predicted_fault_id=None if predicted_fault_id is None else int(predicted_fault_id),
+                        decision_source=decision_source,
                         abstain_reason=abstain_reason,
                         **eval_row,
                     )
@@ -362,7 +402,7 @@ class TEPBenchmark:
                 artifacts["plots"] = ",".join(str(p) for p in plot_paths)
 
         return TEPBenchmarkResult(
-            source="Braatz Tennessee Eastman Process archive",
+            source="Braatz Tennessee Eastman Process archive with TEP knowledge-guided root-cause prior",
             reference_shape=tuple(int(x) for x in reference.shape),
             fault_start_index=TEP_TEST_FAULT_START,
             channel_count=len(TEP_CHANNEL_NAMES),
@@ -395,7 +435,7 @@ def main():
     args = parser.parse_args()
 
     fault_ids = _parse_ids(args.faults, range(0, 22))
-    diagnostic_faults = _parse_ids(args.diagnostic_faults, TEP_LOCALIZATION_PROXIES.keys())
+    diagnostic_faults = _parse_ids(args.diagnostic_faults, range(1, 22))
     data_dir = Path(args.data_dir)
 
     if args.download:
