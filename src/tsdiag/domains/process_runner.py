@@ -17,6 +17,7 @@ from ..tools import (
     root_cause_rank_enhanced,
     standardize_against_normal,
     stationarity_analysis,
+    temporal_fault_type_evidence,
 )
 
 
@@ -144,6 +145,14 @@ class ProcessDiagnosticPipeline:
         artifacts["pre_post_shift_evidence"] = shift
         trace.append("pre_post_shift_evidence")
 
+        type_evidence = temporal_fault_type_evidence(
+            standardized["standardized_signal"],
+            names,
+            alarm_mask=alarm_mask,
+        )
+        artifacts["temporal_fault_type_evidence"] = type_evidence
+        trace.append("temporal_fault_type_evidence")
+
         stationarity = stationarity_analysis(standardized["standardized_signal"])
         artifacts["stationarity_analysis"] = stationarity
         trace.append("stationarity_analysis")
@@ -200,14 +209,17 @@ class ProcessDiagnosticPipeline:
                 shift_scores=shift["shift_scores"],
                 contribution_scores=contribution_scores,
                 onset_order=onset["onset_order"],
+                fault_type_scores=type_evidence["fault_type_scores"],
             )
             artifacts["knowledge_guided_root_cause"] = kg
             trace.append("knowledge_guided_root_cause_decision")
+            abstain_reason = kg.get("abstain_reason")
+            accepted = kg.get("root_cause") is not None and kg["confidence"] >= self.diagnosis_threshold and abstain_reason is None
             diagnosis = {
-                "fault_label": kg["fault_label"] if kg["confidence"] >= self.diagnosis_threshold else None,
-                "root_cause": kg["root_cause"] if kg["confidence"] >= self.diagnosis_threshold else None,
+                "fault_label": kg["fault_label"] if accepted else None,
+                "root_cause": kg["root_cause"] if accepted else None,
                 "confidence": kg["confidence"],
-                "abstain_reason": None if kg["confidence"] >= self.diagnosis_threshold else "knowledge_guided_evidence_below_threshold",
+                "abstain_reason": None if accepted else (abstain_reason or "knowledge_guided_evidence_below_threshold"),
                 "affected_variables": sorted({v for path in ranking["propagation_paths"] for v in path if v != kg.get("root_cause")}),
                 "propagation_paths": ranking["propagation_paths"],
             }
