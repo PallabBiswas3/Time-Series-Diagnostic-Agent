@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from ..contracts import ToolRegistry
 from .change import change_point_detection, cross_sensor_relationships, rolling_statistics
+from .monitoring import (
+    calibrated_pca_monitoring,
+    calibrate_monitoring_config,
+    dpca_monitoring,
+    make_lagged_matrix,
+    run_monitoring_method,
+)
 from .multivariate import (
     contribution_analysis,
     data_quality_check,
@@ -14,12 +21,8 @@ from .multivariate import (
     standardize_against_normal,
     stationarity_analysis,
 )
-from .process import (
-    causal_graph_filter,
-    fault_onset_timing,
-    process_diagnosis,
-    root_cause_rank,
-)
+from .process import causal_graph_filter, fault_onset_timing, process_diagnosis, root_cause_rank
+from .process_enhanced import pre_post_shift_evidence, root_cause_rank_enhanced
 from .signal import (
     bandpass_filter,
     envelope_spectrum,
@@ -53,12 +56,19 @@ def default_tool_registry() -> ToolRegistry:
         "envelope_spectrum": envelope_spectrum,
         "standardize_against_normal": standardize_against_normal,
         "pca_monitoring": pca_monitoring,
+        "calibrated_pca_monitoring": calibrated_pca_monitoring,
+        "dpca_monitoring": dpca_monitoring,
+        "make_lagged_matrix": make_lagged_matrix,
+        "calibrate_monitoring_config": calibrate_monitoring_config,
+        "run_monitoring_method": run_monitoring_method,
         "contribution_analysis": contribution_analysis,
         "stationarity_analysis": stationarity_analysis,
         "granger_causality": granger_causality,
         "causal_graph_filter": causal_graph_filter,
         "fault_onset_timing": fault_onset_timing,
         "root_cause_rank": root_cause_rank,
+        "root_cause_rank_enhanced": root_cause_rank_enhanced,
+        "pre_post_shift_evidence": pre_post_shift_evidence,
         "process_diagnosis": process_diagnosis,
         "operating_regime_detection": detect_operating_regimes,
         "operating_condition_identification": detect_operating_regimes,

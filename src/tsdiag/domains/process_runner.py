@@ -11,8 +11,9 @@ from ..tools import (
     fault_onset_timing,
     granger_causality,
     pca_monitoring,
+    pre_post_shift_evidence,
     process_diagnosis,
-    root_cause_rank,
+    root_cause_rank_enhanced,
     standardize_against_normal,
     stationarity_analysis,
 )
@@ -60,7 +61,6 @@ class ProcessDiagnosticPipeline:
 
     @staticmethod
     def _causal_input(x: np.ndarray, stationarity: dict[str, Any]) -> tuple[np.ndarray, list[int]]:
-        """Difference channels flagged nonstationary; keep stationary channels unchanged."""
         recommendations = stationarity["differencing_recommendations"]
         difference_channels = [int(r["channel"]) for r in recommendations if r.get("difference")]
         if not difference_channels:
@@ -133,6 +133,14 @@ class ProcessDiagnosticPipeline:
         artifacts["contribution_analysis"] = contributions
         trace.append("contribution_analysis")
 
+        shift = pre_post_shift_evidence(
+            standardized["standardized_signal"],
+            names,
+            alarm_mask=alarm_mask,
+        )
+        artifacts["pre_post_shift_evidence"] = shift
+        trace.append("pre_post_shift_evidence")
+
         stationarity = stationarity_analysis(standardized["standardized_signal"])
         artifacts["stationarity_analysis"] = stationarity
         trace.append("stationarity_analysis")
@@ -170,15 +178,16 @@ class ProcessDiagnosticPipeline:
         artifacts["fault_onset_timing"] = onset
         trace.append("fault_onset_timing")
 
-        ranking = root_cause_rank(
+        ranking = root_cause_rank_enhanced(
             contributions["suspect_variables"],
             filtered["filtered_causal_graph"],
             onset["onset_order"],
             variable_contributions=contributions["variable_contributions"],
+            shift_scores=shift["shift_scores"],
             channel_names=names,
         )
         artifacts["root_cause_rank"] = ranking
-        trace.append("root_cause_rank")
+        trace.append("root_cause_rank_enhanced")
 
         diagnosis = process_diagnosis(
             ranking["root_cause_ranking"],

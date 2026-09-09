@@ -20,7 +20,17 @@ from .multivariate import (
     standardize_against_normal,
     stationarity_analysis,
 )
+from .monitoring import (
+    MonitoringConfig,
+    apply_alarm_persistence,
+    calibrate_monitoring_config,
+    calibrated_pca_monitoring,
+    dpca_monitoring,
+    make_lagged_matrix,
+    run_monitoring_method,
+)
 from .process import causal_graph_filter, fault_onset_timing, process_diagnosis, root_cause_rank
+from .process_enhanced import pre_post_shift_evidence, root_cause_rank_enhanced
 from .change import change_point_detection, cross_sensor_relationships, rolling_statistics
 from .wavelet import (
     correlation_sensor_weighting,
@@ -35,10 +45,13 @@ __all__ = [
     "time_frequency_analysis", "spectral_kurtosis", "bandpass_filter",
     "hilbert_envelope", "envelope_spectrum", "data_quality_check",
     "standardize_against_normal", "pca_monitoring", "contribution_analysis",
-    "stationarity_analysis", "granger_causality", "causal_graph_filter",
-    "fault_onset_timing", "root_cause_rank", "process_diagnosis",
-    "detect_operating_regimes", "regime_normalization", "residual_analysis",
-    "robust_anomaly_detection", "rolling_statistics", "cross_sensor_relationships",
+    "stationarity_analysis", "granger_causality", "detect_operating_regimes",
+    "regime_normalization", "residual_analysis", "robust_anomaly_detection",
+    "MonitoringConfig", "apply_alarm_persistence", "calibrate_monitoring_config",
+    "calibrated_pca_monitoring", "dpca_monitoring", "make_lagged_matrix",
+    "run_monitoring_method", "causal_graph_filter", "fault_onset_timing",
+    "root_cause_rank", "root_cause_rank_enhanced", "pre_post_shift_evidence",
+    "process_diagnosis", "rolling_statistics", "cross_sensor_relationships",
     "change_point_detection", "wavelet_denoising", "cross_correlation_analysis",
     "correlation_sensor_weighting", "multisensor_fusion", "default_tool_registry",
 ]
