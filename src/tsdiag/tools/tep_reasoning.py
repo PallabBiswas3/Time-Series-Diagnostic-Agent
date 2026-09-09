@@ -40,8 +40,6 @@ def _choose_best_root(roots: list[str], score_map: dict[str, float]) -> str | No
         return None
     primary = roots[0]
     primary_score = score_map.get(primary, 0.0)
-    # Prefer the actuator/exogenous primary root when it has meaningful direct
-    # evidence; otherwise fall back to the best-supported listed root.
     if primary_score > 0.05:
         return primary
     return max(roots, key=lambda root: score_map.get(root, 0.0))
@@ -110,10 +108,6 @@ def rank_tep_fault_catalog(
         affected_overlap = len(affected_hits) / max(1, min(len(affected), len(top_set)))
         type_score = _fault_type_score(record, fault_type_scores)
 
-        # Fault-catalog match: direct root support remains the strongest term.
-        # Affected-overlap alone caused repeated confident IDV(4)/IDV(5)
-        # over-predictions in the first real benchmark, so the type prior is used
-        # only as a weak discriminator and catalog acceptance is gated later.
         catalog_score = (
             0.42 * root_score
             + 0.24 * affected_overlap
@@ -197,6 +191,7 @@ def knowledge_guided_root_cause_decision(
     generic_root = str(generic_best["variable"]) if generic_best else None
     generic_conf = float(generic_best.get("score", 0.0)) if generic_best else 0.0
     ranked_roots = _ranked_catalog_roots(rows)
+    has_type_evidence = bool(fault_type_scores)
 
     if not best_catalog:
         return {
@@ -250,9 +245,7 @@ def knowledge_guided_root_cause_decision(
             "abstain_reason": "catalog_root_not_directly_supported",
         }
 
-    if margin < min_catalog_margin:
-        # Keep the physical root when supported, but do not overclaim a specific
-        # IDV label if nearby catalog mechanisms are almost tied.
+    if has_type_evidence and margin < min_catalog_margin:
         return {
             **base_payload,
             "root_cause": root,
