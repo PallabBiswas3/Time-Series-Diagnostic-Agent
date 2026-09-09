@@ -12,6 +12,18 @@ def _as_1d(signal) -> np.ndarray:
     return x
 
 
+def _longest_true_run(mask: np.ndarray) -> int:
+    longest = 0
+    current = 0
+    for value in np.asarray(mask, dtype=bool):
+        if value:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
 def signal_integrity(signal, sampling_rate_hz: float, clipping_quantile: float = 0.999):
     x = np.asarray(signal, dtype=float).ravel()
     flags = []
@@ -25,12 +37,19 @@ def signal_integrity(signal, sampling_rate_hz: float, clipping_quantile: float =
         return {"quality_flags": flags or ["no_finite_samples"], "duration_s": 0.0, "clipping_fraction": 1.0, "dc_offset": np.nan}
     if sampling_rate_hz <= 0:
         flags.append("invalid_sampling_rate")
+
     lo, hi = np.quantile(finite, [1 - clipping_quantile, clipping_quantile])
     span = hi - lo
     tol = max(abs(span) * 1e-6, 1e-12)
-    clipping = np.mean((np.abs(finite - finite.min()) <= tol) | (np.abs(finite - finite.max()) <= tol))
-    if clipping > 0.01:
+    at_extreme = (np.abs(finite - finite.min()) <= tol) | (np.abs(finite - finite.max()) <= tol)
+    clipping = float(np.mean(at_extreme))
+    plateau_run = _longest_true_run(at_extreme)
+    # Repeated isolated extrema are normal for periodic signals. ADC clipping usually
+    # creates a flat plateau over consecutive samples, so require both occupancy and
+    # a persistent run before flagging.
+    if clipping > 0.01 and plateau_run >= 3:
         flags.append("possible_clipping")
+
     dc = float(np.mean(finite))
     rms = float(np.sqrt(np.mean((finite - dc) ** 2)))
     if rms > 0 and abs(dc) > 0.5 * rms:
@@ -38,7 +57,8 @@ def signal_integrity(signal, sampling_rate_hz: float, clipping_quantile: float =
     return {
         "quality_flags": flags,
         "duration_s": float(finite.size / sampling_rate_hz) if sampling_rate_hz > 0 else 0.0,
-        "clipping_fraction": float(clipping),
+        "clipping_fraction": clipping,
+        "clipping_plateau_run": int(plateau_run),
         "dc_offset": dc,
         "finite_fraction": float(finite.size / max(x.size, 1)),
     }
