@@ -1,0 +1,71 @@
+name: Tennessee Eastman Benchmark
+
+on:
+  pull_request:
+    paths:
+      - "src/tsdiag/**"
+      - "tests/**"
+      - ".github/workflows/tep-benchmark.yml"
+  workflow_dispatch:
+
+jobs:
+  tep-real-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Unit tests
+        run: pytest -q
+
+      - name: Run canonical Braatz TEP benchmark
+        run: |
+          python -m tsdiag.benchmarks.tep \
+            --download \
+            --faults 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 \
+            --diagnostic-faults 4 5 6 14 15 21 \
+            --diagnostic-top-k 6 \
+            --maxlag 1 \
+            --output outputs/tep_benchmark.json
+
+      - name: Show benchmark summary
+        if: always()
+        run: |
+          if [ -f outputs/tep_benchmark.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path("outputs/tep_benchmark.json")
+          result = json.loads(p.read_text())
+          print(json.dumps(result["summary"], indent=2))
+          print("\nPer-fault detection rates:")
+          for row in result["faults"]:
+              if row["fault_id"] != 0:
+                  print(
+                      f"IDV({row['fault_id']:02d}) "
+                      f"DR={row['post_fault_detection_rate']:.3f} "
+                      f"FAR={row['pre_fault_false_alarm_rate']:.3f} "
+                      f"delay={row['detection_delay_samples']} "
+                      f"root={row['predicted_root_cause']} "
+                      f"proxy_hit={row['localization_hit']}"
+                  )
+          PY
+          fi
+
+      - name: Upload benchmark result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tep-benchmark-result
+          path: outputs/tep_benchmark.json
+          if-no-files-found: warn
