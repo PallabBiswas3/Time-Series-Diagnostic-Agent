@@ -8,8 +8,12 @@ import numpy as np
 
 @dataclass(frozen=True)
 class ResidualCUSUMConfig:
-    drift: float = 0.25
-    threshold: float = 8.0
+    # k=0.5 is the standard half-sigma reference value for detecting an
+    # approximately one-sigma persistent mean shift.  The previous 0.25 value
+    # was too eager when several SCADA residual channels were monitored in
+    # parallel.
+    drift: float = 0.5
+    threshold: float = 10.0
     reset_after_alarm: bool = True
     hold_samples: int = 6
     two_sided: bool = True
@@ -28,13 +32,15 @@ def residual_cusum(
     normalized_residuals,
     *,
     timestamps=None,
+    reset_mask=None,
     config: ResidualCUSUMConfig | None = None,
 ) -> dict[str, Any]:
     """Sequential two-sided CUSUM for low-amplitude persistent residual shifts.
 
-    Inputs are normalized healthy-model residuals. The detector accumulates
-    departures larger than ``drift`` and emits sample indices, optional timestamps,
-    and a short post-change hold mask suitable for fusion into an event alarm stream.
+    Inputs are normalized healthy-model residuals. ``reset_mask`` may mark known
+    operating-boundary samples (for example, a regime transition). Accumulators
+    are cleared at those boundaries so a normal change in operating point cannot
+    be integrated into a false persistent fault.
     """
     cfg = config or ResidualCUSUMConfig()
     x = _as_2d(normalized_residuals)
@@ -47,6 +53,12 @@ def residual_cusum(
         if ts.shape[0] != n:
             raise ValueError("timestamps length mismatch")
 
+    resets = np.zeros(n, dtype=bool)
+    if reset_mask is not None:
+        resets = np.asarray(reset_mask, dtype=bool)
+        if resets.shape != (n,):
+            raise ValueError("reset_mask length mismatch")
+
     pos = np.zeros(d, dtype=float)
     neg = np.zeros(d, dtype=float)
     pos_history = np.zeros((n, d), dtype=float)
@@ -54,6 +66,9 @@ def residual_cusum(
     point_mask = np.zeros((n, d), dtype=bool)
 
     for i in range(n):
+        if resets[i]:
+            pos[:] = 0.0
+            neg[:] = 0.0
         row = x[i]
         pos = np.maximum(0.0, pos + row - float(cfg.drift))
         if cfg.two_sided:
@@ -108,6 +123,7 @@ def residual_cusum(
         "cusum_scores": score,
         "positive_cusum": pos_history,
         "negative_cusum": neg_history,
+        "reset_mask": resets,
         "configuration": {
             "drift": float(cfg.drift),
             "threshold": float(cfg.threshold),
