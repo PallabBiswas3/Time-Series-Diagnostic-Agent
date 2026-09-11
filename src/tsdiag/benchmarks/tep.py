@@ -176,13 +176,20 @@ def _candidate_channels(reference: np.ndarray, current: np.ndarray, alarm_mask, 
     name_to_idx = {name: i for i, name in enumerate(TEP_CHANNEL_NAMES)}
     ranked = [name_to_idx[name] for name in shift["ranked_variables"] if name in name_to_idx]
     root_indices = [name_to_idx[name] for name in _global_catalog_roots() if name in name_to_idx]
-    budget = min(max(int(top_k), 8) + len(root_indices), current.shape[1])
+
+    # Candidate pruning must never remove a catalog root. Earlier code filled a
+    # single budget from the shift ranking before reaching root_indices, which meant
+    # some true roots could not be ranked or post-mortemed at all. Keep only the
+    # requested number of generic high-shift channels, then append every catalog
+    # root. This remains label-blind because the same global root set is used for
+    # every fault.
     selected: list[int] = []
-    for idx in ranked + root_indices:
+    for idx in ranked[: max(int(top_k), 8)]:
         if idx not in selected:
             selected.append(idx)
-        if len(selected) >= budget:
-            break
+    for idx in root_indices:
+        if idx not in selected:
+            selected.append(idx)
     return selected, shift
 
 
