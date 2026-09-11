@@ -46,6 +46,32 @@ jobs:
             --output outputs/tep_benchmark.json \
             --artifact-dir outputs/tep_benchmark
 
+      - name: Enforce root-cause regression gates
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          result = json.loads(Path("outputs/tep_benchmark.json").read_text())
+          metrics = result["summary"]["root_rank_calibration"]
+          top1 = float(metrics["top1_root_accuracy"])
+          top3 = float(metrics["top3_root_accuracy"])
+          abstention = float(metrics["abstention_rate"])
+          false_confident = float(metrics["false_confident_rate"])
+
+          print(
+              f"TEP CV gates: top1={top1:.4f}, top3={top3:.4f}, "
+              f"abstention={abstention:.4f}, false_confident={false_confident:.4f}"
+          )
+
+          assert top1 > 0.375, f"Top-1 RCA regressed: {top1:.4f} <= 0.375"
+          assert top3 > 0.5625, f"Top-3 RCA regressed: {top3:.4f} <= 0.5625"
+          assert abstention <= 0.35, f"Abstention regressed: {abstention:.4f} > 0.35"
+          assert false_confident <= 0.625, (
+              f"False-confident rate regressed: {false_confident:.4f} > 0.625"
+          )
+          PY
+
       - name: Show benchmark summary
         if: always()
         run: |
