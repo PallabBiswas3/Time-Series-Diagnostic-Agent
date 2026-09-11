@@ -35,7 +35,6 @@ from .tep_reasoning import knowledge_guided_root_cause_decision, rank_tep_fault_
 from .root_rank_calibration import (
     FEATURE_NAMES,
     RootRankerConfig,
-    build_root_feature_rows,
     catalog_feature_scores,
     evaluate_root_ranker,
     optimize_root_ranker,
@@ -44,6 +43,7 @@ from .root_rank_calibration import (
     topology_upstreamness_scores,
     weight_grid,
 )
+from .root_feature_screening import build_root_feature_rows_screened as build_root_feature_rows
 from .root_rank_screening import (
     DEFAULT_ROOT_CANDIDATE_LIMIT,
     cross_validate_root_ranker_screened as cross_validate_root_ranker,
