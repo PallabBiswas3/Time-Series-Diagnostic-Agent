@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 import numpy as np
-from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.cluster import KMeans
+from sklearn.ensemble import HistGradientBoostingRegressor
 
 
 def _as_2d(x) -> np.ndarray:
@@ -67,13 +67,7 @@ def detect_wind_operating_regimes(
     n_regimes: int = 4,
     random_state: int = 0,
 ) -> dict[str, Any]:
-    """Cluster healthy operation into comparable regimes.
-
-    Wind-SCADA is strongly regime dependent. This stage prevents startup, partial
-    load and rated-power operation from being compared as if they were identical.
-    `channel_names` is accepted for domain-contract compatibility; regime drivers
-    can be supplied explicitly by index or inferred from high-variance channels.
-    """
+    """Cluster healthy operation into comparable regimes."""
     x = _as_2d(signal_matrix)
     if channel_names is not None and len(channel_names) != x.shape[1]:
         raise ValueError("channel_names length mismatch")
@@ -121,6 +115,83 @@ def _valid_rows(x: np.ndarray) -> np.ndarray:
     return np.all(np.isfinite(x), axis=1)
 
 
+def _new_nbm(random_state: int) -> HistGradientBoostingRegressor:
+    return HistGradientBoostingRegressor(
+        max_iter=120,
+        learning_rate=0.06,
+        max_leaf_nodes=31,
+        l2_regularization=0.1,
+        random_state=random_state,
+    )
+
+
+def _subsample_indices(idx: np.ndarray, maximum: int) -> np.ndarray:
+    if idx.size <= maximum:
+        return idx
+    positions = np.linspace(0, idx.size - 1, maximum).astype(int)
+    return idx[positions]
+
+
+def _oos_residual_scale(
+    ref: np.ndarray,
+    regimes: np.ndarray,
+    target: int,
+    feature_cols: list[int],
+    valid: np.ndarray,
+    *,
+    max_train_samples_per_regime: int,
+    random_state: int,
+) -> float:
+    """Estimate healthy prediction error on rows not used to fit the calibrator.
+
+    The previous implementation normalized deployment residuals by in-sample
+    training error. Tree models can make that error unrealistically small and
+    turn ordinary unseen SCADA into many-sigma residuals. We use a deterministic
+    stratified 20% holdout solely to estimate residual scale, then fit the final
+    deployment models on all healthy rows.
+    """
+    fit_mask = np.zeros(ref.shape[0], dtype=bool)
+    cal_mask = np.zeros(ref.shape[0], dtype=bool)
+    for regime in np.unique(regimes[valid]):
+        idx = np.flatnonzero(valid & (regimes == regime))
+        if idx.size < 10:
+            continue
+        cal_idx = idx[::5]
+        fit_idx = np.setdiff1d(idx, cal_idx, assume_unique=True)
+        cal_mask[cal_idx] = True
+        fit_mask[fit_idx] = True
+
+    # Very small references retain the old safe fallback rather than failing.
+    if np.sum(cal_mask) < 10 or np.sum(fit_mask) < 20:
+        return float("nan")
+
+    global_fit = np.flatnonzero(fit_mask)
+    global_model = _new_nbm(random_state)
+    global_model.fit(ref[global_fit][:, feature_cols], ref[global_fit, target])
+
+    expected = np.full(ref.shape[0], np.nan)
+    for regime in np.unique(regimes[cal_mask]):
+        cal_idx = np.flatnonzero(cal_mask & (regimes == regime))
+        fit_idx = np.flatnonzero(fit_mask & (regimes == regime))
+        if fit_idx.size >= 30:
+            fit_idx = _subsample_indices(fit_idx, max_train_samples_per_regime)
+            model = _new_nbm(random_state)
+            model.fit(ref[fit_idx][:, feature_cols], ref[fit_idx, target])
+        else:
+            model = global_model
+        expected[cal_idx] = model.predict(ref[cal_idx][:, feature_cols])
+
+    residual = ref[cal_mask, target] - expected[cal_mask]
+    residual = residual[np.isfinite(residual)]
+    if residual.size < 10:
+        return float("nan")
+    center = np.nanmedian(residual)
+    scale = float(np.nanmedian(np.abs(residual - center)) * 1.4826)
+    if not np.isfinite(scale) or scale < 1e-12:
+        scale = float(np.nanstd(residual))
+    return scale
+
+
 def fit_wind_normal_behavior_model(
     normal_reference,
     reference_regime_ids,
@@ -143,40 +214,36 @@ def fit_wind_normal_behavior_model(
     models: dict[tuple[int, int], HistGradientBoostingRegressor] = {}
     global_models: dict[int, HistGradientBoostingRegressor] = {}
     expected_ref = np.full((ref.shape[0], len(targets)), np.nan)
+    scales = np.full(len(targets), np.nan)
 
     for target_pos, target in enumerate(targets):
         feature_cols = [j for j in predictors if j != target]
         if not feature_cols:
             feature_cols = predictors
-
         valid = _valid_rows(ref[:, feature_cols]) & np.isfinite(ref[:, target])
         if np.sum(valid) < 10:
             raise ValueError(f"insufficient finite reference samples for target {target}")
-        global_model = HistGradientBoostingRegressor(
-            max_iter=120,
-            learning_rate=0.06,
-            max_leaf_nodes=31,
-            l2_regularization=0.1,
+
+        scales[target_pos] = _oos_residual_scale(
+            ref,
+            regimes,
+            target,
+            feature_cols,
+            valid,
+            max_train_samples_per_regime=max_train_samples_per_regime,
             random_state=random_state,
         )
+
+        global_model = _new_nbm(random_state)
         global_model.fit(ref[valid][:, feature_cols], ref[valid, target])
         global_models[target] = global_model
 
         for regime in np.unique(regimes):
-            mask = valid & (regimes == regime)
-            idx = np.flatnonzero(mask)
+            idx = np.flatnonzero(valid & (regimes == regime))
             if idx.size < 30:
                 continue
-            if idx.size > max_train_samples_per_regime:
-                sample_positions = np.linspace(0, idx.size - 1, max_train_samples_per_regime).astype(int)
-                idx = idx[sample_positions]
-            model = HistGradientBoostingRegressor(
-                max_iter=120,
-                learning_rate=0.06,
-                max_leaf_nodes=31,
-                l2_regularization=0.1,
-                random_state=random_state,
-            )
+            idx = _subsample_indices(idx, max_train_samples_per_regime)
+            model = _new_nbm(random_state)
             model.fit(ref[idx][:, feature_cols], ref[idx, target])
             models[(int(regime), target)] = model
 
@@ -188,11 +255,16 @@ def fit_wind_normal_behavior_model(
             model = models.get((int(regime), target), global_model)
             expected_ref[valid_mask, target_pos] = model.predict(ref[valid_mask][:, feature_cols])
 
-    residuals = ref[:, targets] - expected_ref
-    residual_scale = np.nanmedian(np.abs(residuals - np.nanmedian(residuals, axis=0)), axis=0) * 1.4826
-    fallback = np.nanstd(residuals, axis=0)
-    residual_scale = np.where(residual_scale < 1e-12, fallback, residual_scale)
-    residual_scale = np.where(residual_scale < 1e-12, 1.0, residual_scale)
+    # Only use in-sample residuals as a fallback for tiny references where a
+    # meaningful held-out calibration split is impossible.
+    in_sample_residuals = ref[:, targets] - expected_ref
+    fallback = np.nanmedian(
+        np.abs(in_sample_residuals - np.nanmedian(in_sample_residuals, axis=0)), axis=0
+    ) * 1.4826
+    fallback_std = np.nanstd(in_sample_residuals, axis=0)
+    fallback = np.where(fallback < 1e-12, fallback_std, fallback)
+    residual_scale = np.where(np.isfinite(scales) & (scales >= 1e-12), scales, fallback)
+    residual_scale = np.where(np.isfinite(residual_scale) & (residual_scale >= 1e-12), residual_scale, 1.0)
 
     return WindNormalBehaviorState(
         target_indices=targets,
@@ -204,11 +276,7 @@ def fit_wind_normal_behavior_model(
     )
 
 
-def predict_wind_normal_behavior(
-    signal_matrix,
-    regime_ids,
-    state: WindNormalBehaviorState,
-) -> dict[str, Any]:
+def predict_wind_normal_behavior(signal_matrix, regime_ids, state: WindNormalBehaviorState) -> dict[str, Any]:
     x = _as_2d(signal_matrix)
     regimes = np.asarray(regime_ids)
     if regimes.shape[0] != x.shape[0]:
@@ -252,7 +320,6 @@ def normal_behavior_model(
     physics_model=None,
     ambient_conditions=None,
 ) -> dict[str, Any]:
-    """One-shot domain-contract wrapper around the fit/predict NBM API."""
     x = _as_2d(signal_matrix)
     ref = x if normal_reference is None else _as_2d(normal_reference)
     ref_regimes = np.asarray(regime_ids if reference_regime_ids is None else reference_regime_ids)
