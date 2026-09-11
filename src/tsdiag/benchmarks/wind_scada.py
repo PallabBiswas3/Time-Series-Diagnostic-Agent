@@ -32,6 +32,9 @@ class WindBenchmarkEventResult:
     event_detected: bool
     max_criticality: int
     alarm_fraction: float
+    residual_alarm_fraction: float
+    drift_alarm_fraction: float
+    fused_alarm_fraction: float
     event_window_recall: float | None
     first_detection_index: int | None
     lead_time_minutes: float | None
@@ -99,6 +102,9 @@ def _write_summary_markdown(payload: dict, path: Path) -> None:
         f"| Mean max CARE-style criticality | {_fmt(summary.get('mean_max_criticality'), 2)} |",
         f"| Mean anomaly-event criticality | {_fmt(summary.get('mean_anomaly_event_criticality'), 2)} |",
         f"| Mean normal-event criticality | {_fmt(summary.get('mean_normal_event_criticality'), 2)} |",
+        f"| Mean residual alarm fraction | {_fmt(summary.get('mean_residual_alarm_fraction'))} |",
+        f"| Mean CUSUM alarm fraction | {_fmt(summary.get('mean_drift_alarm_fraction'))} |",
+        f"| Mean fused alarm fraction | {_fmt(summary.get('mean_fused_alarm_fraction'))} |",
         f"| Mean tool calls / event | {_fmt(summary.get('mean_tool_calls'), 2)} |",
         f"| Mean runtime / event (s) | {_fmt(summary.get('mean_runtime_seconds'), 3)} |",
         f"| Total runtime (s) | {_fmt(summary.get('total_runtime_seconds'), 2)} |",
@@ -201,6 +207,7 @@ def run_care_benchmark(
             evaluation_rows.append(evaluation)
             cp = result.artifacts.get("residual_changepoint", {})
             physics = result.artifacts.get("physics_consistency", {})
+            fusion = result.artifacts.get("fusion", {})
             event_rows.append(
                 WindBenchmarkEventResult(
                     event_id=event_id,
@@ -210,6 +217,9 @@ def run_care_benchmark(
                     event_detected=evaluation.event_detected,
                     max_criticality=evaluation.max_criticality,
                     alarm_fraction=evaluation.alarm_fraction,
+                    residual_alarm_fraction=float(fusion.get("residual_alarm_fraction", 0.0)),
+                    drift_alarm_fraction=float(fusion.get("drift_alarm_fraction", 0.0)),
+                    fused_alarm_fraction=float(fusion.get("fused_alarm_fraction", 0.0)),
                     event_window_recall=evaluation.event_window_recall,
                     first_detection_index=evaluation.first_detection_index,
                     lead_time_minutes=evaluation.lead_time_minutes,
@@ -237,6 +247,9 @@ def run_care_benchmark(
             "total_runtime_seconds": float(total_runtime),
             "mean_tool_calls": float(np.mean([r.tool_call_count for r in event_rows])) if event_rows else None,
             "total_tool_calls": int(sum(r.tool_call_count for r in event_rows)),
+            "mean_residual_alarm_fraction": float(np.mean([r.residual_alarm_fraction for r in event_rows])) if event_rows else None,
+            "mean_drift_alarm_fraction": float(np.mean([r.drift_alarm_fraction for r in event_rows])) if event_rows else None,
+            "mean_fused_alarm_fraction": float(np.mean([r.fused_alarm_fraction for r in event_rows])) if event_rows else None,
         }
     )
 
