@@ -66,6 +66,8 @@ jobs:
         run: |
           python scripts/run_wind_scada_benchmark.py \
             --data-dir CARE_To_Compare.zip \
+            --cusum-drift 0.5 \
+            --cusum-threshold 10.0 \
             --output-dir outputs/wind_benchmark
       - name: Show CARE v6 summary
         if: always()
