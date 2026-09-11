@@ -29,9 +29,15 @@ from ..evaluation.reporting import (
     write_markdown_summary,
 )
 from ..evaluation.tep_ablation import run_tep_root_cause_ablation, summarize_tep_ablation
+from ..evaluation.tep_error_analysis import (
+    analyze_root_cause_errors,
+    write_error_analysis_json,
+    write_error_analysis_markdown,
+)
 from ..tools import (
     MonitoringConfig,
     calibrate_monitoring_config,
+    cross_validate_root_ranker,
     pre_post_shift_evidence,
     run_monitoring_method,
     standardize_against_normal,
@@ -78,6 +84,8 @@ class TEPBenchmarkResult:
     summary: dict[str, Any]
     artifacts: dict[str, str]
     ablation: dict[str, Any]
+    root_rank_calibration: dict[str, Any]
+    error_analysis: dict[str, Any]
 
 
 def _parse_ids(values: list[str] | None, default):
@@ -167,10 +175,6 @@ def _candidate_channels(reference: np.ndarray, current: np.ndarray, alarm_mask, 
     )
     name_to_idx = {name: i for i, name in enumerate(TEP_CHANNEL_NAMES)}
     ranked = [name_to_idx[name] for name in shift["ranked_variables"] if name in name_to_idx]
-
-    # Catalog roots are included for every diagnostic run without using the true
-    # fault ID. This lets the diagnosis stage choose among known TEP mechanisms,
-    # while the true fault ID is used only later for evaluation.
     root_indices = [name_to_idx[name] for name in _global_catalog_roots() if name in name_to_idx]
     budget = min(max(int(top_k), 8) + len(root_indices), current.shape[1])
     selected: list[int] = []
@@ -259,13 +263,34 @@ def _choose_ablation_row(rows: list[dict[str, Any]], variant: str = "topology_ca
     return rows[-1] if rows else None
 
 
-class TEPBenchmark:
-    """Run calibrated PCA/DPCA benchmarks on canonical Braatz TEP files.
+def _cv_rows(calibration_result: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for row in calibration_result.get("held_out_rows", []):
+        expected = [str(x) for x in row.get("expected_roots", [])]
+        predicted = row.get("predicted_root")
+        rows.append(
+            {
+                "fault_id": int(row["fault_id"]),
+                "variant": "calibrated_cv",
+                "predicted_root": predicted,
+                "top3_roots": list(row.get("top3_roots", [])),
+                "predicted_fault_id": None,
+                "predicted_fault_label": None,
+                "confidence": float(row.get("confidence", 0.0) or 0.0),
+                "decision_source": "cross_validated_root_ranker",
+                "abstain_reason": row.get("abstain_reason"),
+                "expected_roots": expected,
+                "root_hit": bool(row.get("root_hit")),
+                "top3_root_hit": bool(row.get("top3_root_hit")),
+                "fault_id_hit": None,
+                "false_confident": bool(row.get("false_confident")),
+            }
+        )
+    return rows
 
-    Calibration uses held-out normal-operation data only. Root-cause diagnosis uses
-    a TEP fault catalog and sparse process-topology prior, but not the true fault ID;
-    labels are used only to score the final predictions.
-    """
+
+class TEPBenchmark:
+    """Run calibrated PCA/DPCA and root-cause benchmarks on canonical TEP files."""
 
     def __init__(
         self,
@@ -300,10 +325,7 @@ class TEPBenchmark:
                 persistence_grid=self.persistence_grid,
                 lags_grid=self.lags_grid,
             )
-            out[method] = {
-                "config": calibrated["config"],
-                "trials": calibrated["trials"],
-            }
+            out[method] = {"config": calibrated["config"], "trials": calibrated["trials"]}
         return out
 
     def run(
@@ -330,6 +352,7 @@ class TEPBenchmark:
         topology = tep_topology()
         results: list[TEPFaultMethodResult] = []
         ablation_rows: list[dict[str, Any]] = []
+        calibration_records: list[dict[str, Any]] = []
 
         for fault_id in [int(x) for x in fault_ids]:
             current = load_tep_dat(data_dir / f"d{fault_id:02d}_te.dat")
@@ -382,6 +405,7 @@ class TEPBenchmark:
                             confidence_threshold=0.18,
                         )
                         ablation_rows.extend(ablation["rows"])
+                        calibration_records.append(ablation["calibration_record"])
                         chosen = _choose_ablation_row(ablation["rows"], "topology_catalog")
                         if chosen:
                             predicted_root = chosen.get("predicted_root")
@@ -440,10 +464,32 @@ class TEPBenchmark:
                     )
                 )
 
+        root_rank_calibration: dict[str, Any] = {}
+        error_analysis: dict[str, Any] = {}
+        if run_ablation and calibration_records:
+            root_rank_calibration = cross_validate_root_ranker(
+                calibration_records,
+                n_splits=4,
+                max_abstention_rate=0.35,
+                max_false_confident_rate=0.625,
+                weight_step=0.10,
+                margin_grid=(0.0, 0.02, 0.04, 0.06, 0.08, 0.10),
+            )
+            ablation_rows.extend(_cv_rows(root_rank_calibration))
+            final_weights = root_rank_calibration["final_config"]["weights"]
+            error_analysis = analyze_root_cause_errors(
+                calibration_records,
+                root_rank_calibration["held_out_rows"],
+                final_weights,
+            )
+
         summary = _summarize(results, list(self.methods))
         ablation_summary = summarize_tep_ablation(ablation_rows) if ablation_rows else {}
         if ablation_summary:
             summary["root_cause_ablation"] = ablation_summary
+        if root_rank_calibration:
+            summary["root_rank_calibration"] = root_rank_calibration["cv_metrics"]
+            summary["root_rank_final_training"] = root_rank_calibration["final_training_metrics"]
 
         artifacts: dict[str, str] = {}
         if output_dir is not None:
@@ -452,7 +498,21 @@ class TEPBenchmark:
             artifacts["fault_table_csv"] = str(write_fault_table(rows, out / "tep_fault_table.csv"))
             if ablation_rows:
                 artifacts["ablation_table_csv"] = str(write_ablation_table(ablation_rows, out / "tep_root_cause_ablation.csv"))
-            artifacts["summary_md"] = str(write_markdown_summary(summary, rows, out / "tep_summary.md", ablation_rows=ablation_rows))
+            if root_rank_calibration:
+                weights_path = out / "tep_calibrated_weights.json"
+                weights_path.parent.mkdir(parents=True, exist_ok=True)
+                weights_path.write_text(json.dumps(root_rank_calibration, indent=2), encoding="utf-8")
+                artifacts["calibrated_weights_json"] = str(weights_path)
+            if error_analysis:
+                artifacts["error_analysis_json"] = str(
+                    write_error_analysis_json(error_analysis, out / "tep_error_analysis_report.json")
+                )
+                artifacts["error_analysis_md"] = str(
+                    write_error_analysis_markdown(error_analysis, out / "tep_error_analysis_report.md")
+                )
+            artifacts["summary_md"] = str(
+                write_markdown_summary(summary, rows, out / "tep_summary.md", ablation_rows=ablation_rows)
+            )
             if write_plots:
                 plot_paths = write_detection_plots(rows, out / "plots")
                 if ablation_rows:
@@ -461,7 +521,7 @@ class TEPBenchmark:
                 artifacts["plots"] = ",".join(str(p) for p in plot_paths)
 
         return TEPBenchmarkResult(
-            source="Braatz Tennessee Eastman Process archive with TEP knowledge-guided root-cause prior",
+            source="Braatz Tennessee Eastman Process archive with calibrated knowledge-guided root-cause ranking",
             reference_shape=tuple(int(x) for x in reference.shape),
             fault_start_index=TEP_TEST_FAULT_START,
             channel_count=len(TEP_CHANNEL_NAMES),
@@ -471,6 +531,8 @@ class TEPBenchmark:
             summary=summary,
             artifacts=artifacts,
             ablation={"rows": ablation_rows, "summary": ablation_summary},
+            root_rank_calibration=root_rank_calibration,
+            error_analysis=error_analysis,
         )
 
 
@@ -489,7 +551,7 @@ def main():
     parser.add_argument("--alpha-grid", default="0.99,0.995,0.9975,0.999,0.9995")
     parser.add_argument("--persistence-grid", default="1,2,3,5")
     parser.add_argument("--lags-grid", default="1,2,3")
-    parser.add_argument("--run-ablation", action="store_true", help="compare generic/topology/catalog root-cause variants")
+    parser.add_argument("--run-ablation", action="store_true", help="compare heuristic and cross-validated root-cause variants")
     parser.add_argument("--output", default="outputs/tep_benchmark.json")
     parser.add_argument("--artifact-dir", default="outputs/tep_benchmark")
     parser.add_argument("--no-plots", action="store_true")
@@ -528,9 +590,11 @@ def main():
     print(json.dumps(result.summary, indent=2))
     print("Calibration:")
     print(json.dumps({k: v["config"] for k, v in result.calibration.items()}, indent=2, default=str))
-    if result.ablation.get("summary"):
-        print("Root-cause ablation:")
-        print(json.dumps(result.ablation["summary"], indent=2, default=str))
+    if result.root_rank_calibration:
+        print("Cross-validated root ranker:")
+        print(json.dumps(result.root_rank_calibration["cv_metrics"], indent=2, default=str))
+        print("Final weights:")
+        print(json.dumps(result.root_rank_calibration["final_config"], indent=2, default=str))
     print(f"saved: {output}")
     for key, value in result.artifacts.items():
         print(f"artifact {key}: {value}")
