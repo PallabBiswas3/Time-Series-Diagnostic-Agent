@@ -37,8 +37,8 @@ class WindScadaDiagnosticPipeline:
         n_regimes: int = 4,
         residual_threshold: float = 3.5,
         persistence: int = 3,
-        cusum_drift: float = 0.25,
-        cusum_threshold: float = 8.0,
+        cusum_drift: float = 0.5,
+        cusum_threshold: float = 10.0,
         cusum_hold_samples: int = 6,
         physics_config: WindPhysicsConfig | None = None,
         random_state: int = 0,
@@ -199,10 +199,18 @@ class WindScadaDiagnosticPipeline:
             persistence=self.persistence,
         )
 
+        # Regime switches are known operating-point boundaries, not evidence of
+        # a persistent fault. Clear CUSUM memory at the first sample of each new
+        # regime to prevent normal transitions from integrating into alarms.
+        regime_transition = np.zeros(len(prediction_regimes), dtype=bool)
+        if len(prediction_regimes) > 1:
+            regime_transition[1:] = prediction_regimes[1:] != prediction_regimes[:-1]
+
         tool_trace.append("residual_cusum")
         changepoint = residual_cusum(
             predicted["normalized_residuals"],
             timestamps=prediction_timestamps,
+            reset_mask=regime_transition,
             config=self.cusum_config,
         )
 
@@ -248,6 +256,7 @@ class WindScadaDiagnosticPipeline:
                 "predictor_indices": predictors,
                 "reference_regimes": reference_regimes,
                 "prediction_regimes": prediction_regimes,
+                "regime_transition_mask": regime_transition,
                 "normal_behavior": predicted,
                 "anomaly_detection": anomaly,
                 "residual_changepoint": changepoint,
