@@ -1,5 +1,6 @@
 name: CARE v6 Wind SCADA Benchmark
 
+# CI trigger: validate PR #11 on the full CARE v6 benchmark.
 on:
   pull_request:
     paths:
