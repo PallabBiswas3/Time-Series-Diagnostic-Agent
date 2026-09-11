@@ -8,6 +8,21 @@ from .tep import (
     load_tep_reference,
     tep_fault_mask,
 )
+from .wind_care import (
+    CARE_ARCHIVE_NAME,
+    CARE_DOI,
+    CARE_SAMPLE_PERIOD_MINUTES,
+    CARE_VERSION,
+    CARE_WIND_FARMS,
+    CareEvent,
+    CareEventData,
+    care_normal_mask,
+    care_sensor_frame,
+    load_care_event,
+    load_care_event_info,
+    load_care_feature_description,
+    validate_care_layout,
+)
 
 __all__ = [
     "TEP_CHANNEL_NAMES",
@@ -18,4 +33,17 @@ __all__ = [
     "load_tep_dat",
     "load_tep_reference",
     "tep_fault_mask",
+    "CARE_ARCHIVE_NAME",
+    "CARE_DOI",
+    "CARE_SAMPLE_PERIOD_MINUTES",
+    "CARE_VERSION",
+    "CARE_WIND_FARMS",
+    "CareEvent",
+    "CareEventData",
+    "care_normal_mask",
+    "care_sensor_frame",
+    "load_care_event",
+    "load_care_event_info",
+    "load_care_feature_description",
+    "validate_care_layout",
 ]

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from ..contracts import ToolRegistry
+from ..detectors.residual_changepoint import residual_cusum
+from ..domain.wind_physics import physics_consistency_check
 from .change import change_point_detection, cross_sensor_relationships, rolling_statistics
 from .monitoring import (
     calibrated_pca_monitoring,
@@ -39,6 +41,12 @@ from .wavelet import (
     multisensor_fusion,
     wavelet_denoising,
 )
+from .wind_scada import (
+    detect_wind_operating_regimes,
+    normal_behavior_model,
+    scada_quality_check,
+    wind_residual_anomaly_detection,
+)
 
 
 def default_tool_registry() -> ToolRegistry:
@@ -46,7 +54,7 @@ def default_tool_registry() -> ToolRegistry:
     tools = {
         "signal_integrity": signal_integrity,
         "process_data_quality": data_quality_check,
-        "scada_quality_check": data_quality_check,
+        "scada_quality_check": scada_quality_check,
         "time_domain_features": time_domain_features,
         "welch_psd": welch_psd,
         "time_frequency_analysis": time_frequency_analysis,
@@ -70,14 +78,17 @@ def default_tool_registry() -> ToolRegistry:
         "root_cause_rank_enhanced": root_cause_rank_enhanced,
         "pre_post_shift_evidence": pre_post_shift_evidence,
         "process_diagnosis": process_diagnosis,
-        "operating_regime_detection": detect_operating_regimes,
+        "operating_regime_detection": detect_wind_operating_regimes,
         "operating_condition_identification": detect_operating_regimes,
+        "normal_behavior_model": normal_behavior_model,
         "regime_normalization": regime_normalization,
         "residual_analysis": residual_analysis,
-        "scada_anomaly_detection": robust_anomaly_detection,
+        "scada_anomaly_detection": wind_residual_anomaly_detection,
         "rolling_statistics": rolling_statistics,
         "cross_sensor_relationships": cross_sensor_relationships,
         "change_point_detection": change_point_detection,
+        "residual_change_point_detection": residual_cusum,
+        "physics_consistency_check": physics_consistency_check,
         "wavelet_denoising": wavelet_denoising,
         "cross_correlation_analysis": cross_correlation_analysis,
         "correlation_sensor_weighting": correlation_sensor_weighting,

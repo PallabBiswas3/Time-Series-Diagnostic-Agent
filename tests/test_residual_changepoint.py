@@ -1,0 +1,29 @@
+import numpy as np
+
+from tsdiag.detectors.residual_changepoint import ResidualCUSUMConfig, residual_cusum
+
+
+def test_cusum_detects_low_amplitude_persistent_shift():
+    rng = np.random.default_rng(11)
+    residuals = rng.normal(0.0, 0.20, size=(240, 3))
+    residuals[120:, 1] += 0.85
+    result = residual_cusum(
+        residuals,
+        config=ResidualCUSUMConfig(drift=0.20, threshold=5.0, hold_samples=5),
+    )
+    assert result["change_points"]
+    assert result["change_points"][0] >= 120
+    assert result["change_points"][0] < 160
+    assert 1 in result["channel_change_points"]
+    assert np.any(result["alarm_mask"])
+
+
+def test_cusum_stays_quiet_on_small_centered_noise():
+    rng = np.random.default_rng(12)
+    residuals = rng.normal(0.0, 0.08, size=(300, 2))
+    result = residual_cusum(
+        residuals,
+        config=ResidualCUSUMConfig(drift=0.20, threshold=8.0, hold_samples=4),
+    )
+    assert result["change_points"] == []
+    assert not np.any(result["alarm_mask"])
