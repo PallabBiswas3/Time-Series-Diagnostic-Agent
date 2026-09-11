@@ -1,0 +1,24 @@
+{
+  "status": "bootstrap_until_real_tep_cv_run",
+  "method": "4-fold fault-level cross-validation",
+  "feature_names": [
+    "contribution_score",
+    "pre_post_shift_score",
+    "onset_earliness_score",
+    "topology_upstreamness_score",
+    "fault_type_agreement_score",
+    "catalog_root_prior_score"
+  ],
+  "weights": {
+    "contribution_score": 0.20,
+    "pre_post_shift_score": 0.20,
+    "onset_earliness_score": 0.15,
+    "topology_upstreamness_score": 0.15,
+    "fault_type_agreement_score": 0.10,
+    "catalog_root_prior_score": 0.20
+  },
+  "margin_threshold": 0.04,
+  "max_abstention_rate": 0.35,
+  "max_false_confident_rate": 0.625,
+  "note": "This file is replaced with the real TEP cross-validation result before PR merge."
+}
