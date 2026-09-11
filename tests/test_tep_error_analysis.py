@@ -79,3 +79,29 @@ def test_weak_signal_is_identified_first():
     }]
     report = analyze_root_cause_errors(records, held_out, {"pre_post_shift_score": 1.0})
     assert report["errors"][0]["primary_failure_cause"] == "WEAK_SIGNAL"
+
+
+def test_screened_out_true_root_is_not_silently_dropped():
+    records = [{
+        "fault_id": 9,
+        "expected_roots": ["TRUE_ROOT"],
+        "candidates": [
+            _candidate("WRONG", 1.0, 1.0, 0.8, 0.3, 0.2, 0.1),
+        ],
+    }]
+    held_out = [{
+        "fault_id": 9,
+        "raw_top_root": "WRONG",
+        "predicted_root": "WRONG",
+        "abstained": False,
+        "score_margin": 0.3,
+        "ranking": [{"variable": "WRONG", "score": 0.8}],
+    }]
+    report = analyze_root_cause_errors(records, held_out, {"pre_post_shift_score": 1.0})
+    assert report["error_count"] == 1
+    assert report["candidate_omission_count"] == 1
+    row = report["errors"][0]
+    assert row["true_root"] == "TRUE_ROOT"
+    assert row["true_root_in_candidates"] is False
+    assert row["true_root_rank"] is None
+    assert row["primary_failure_cause"] == "WEAK_SIGNAL"
