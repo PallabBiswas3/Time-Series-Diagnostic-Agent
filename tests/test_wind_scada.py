@@ -122,6 +122,34 @@ def test_regime_aware_normal_behavior_flags_persistent_shift():
     assert detected["alarm_mask"][110:].mean() > 0.50
 
 
+def test_out_of_sample_residual_scale_stays_sane_on_healthy_holdout():
+    rng = np.random.default_rng(17)
+    n_ref = 800
+    wind_ref = rng.uniform(3.0, 14.0, n_ref)
+    power_ref = 22.0 * wind_ref**2 + rng.normal(0.0, 30.0, n_ref)
+    temp_ref = 20.0 + 0.012 * power_ref + np.sin(wind_ref) + rng.normal(0.0, 0.7, n_ref)
+    ref = np.column_stack([wind_ref, power_ref, temp_ref])
+    regimes = (wind_ref >= 8.0).astype(int)
+
+    n_test = 250
+    wind_test = rng.uniform(3.0, 14.0, n_test)
+    power_test = 22.0 * wind_test**2 + rng.normal(0.0, 30.0, n_test)
+    temp_test = 20.0 + 0.012 * power_test + np.sin(wind_test) + rng.normal(0.0, 0.7, n_test)
+    test = np.column_stack([wind_test, power_test, temp_test])
+    test_regimes = (wind_test >= 8.0).astype(int)
+
+    state = fit_wind_normal_behavior_model(
+        ref,
+        regimes,
+        target_indices=[2],
+        predictor_indices=[0, 1, 2],
+    )
+    prediction = predict_wind_normal_behavior(test, test_regimes, state)
+    z = np.abs(prediction["normalized_residuals"][:, 0])
+    assert np.nanmedian(z) < 1.5
+    assert np.mean(z >= 3.5) < 0.10
+
+
 def test_operating_regime_detection_returns_requested_number():
     rng = np.random.default_rng(8)
     x = np.r_[
