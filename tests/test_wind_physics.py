@@ -26,6 +26,28 @@ def test_power_limit_flags_unphysical_generation():
     assert not result["physics_consistent"]
 
 
+def test_reactive_power_is_not_used_as_active_power_alias():
+    n = 120
+    wind = np.full(n, 9.0)
+    reactive_power = np.full(n, 5000.0)
+    pitch = np.zeros(n)
+    generator_speed = np.full(n, 1200.0)
+    ambient = np.full(n, 20.0)
+    reference = np.column_stack([wind, reactive_power, pitch, generator_speed, ambient])
+
+    result = physics_consistency_check(
+        reference,
+        ["wind speed", "reactive_power_avg", "pitch angle", "generator speed", "ambient temp"],
+        normal_reference=reference,
+        config=WindPhysicsConfig(rotor_area_m2=50.0, rated_power_kw=3000.0, min_samples=4),
+    )
+    assert all(row.get("channel") != "reactive_power_avg" for row in result["verification_findings"])
+    assert not any(
+        row["flag"] in {"power_exceeds_aerodynamic_limit", "possible_unannounced_curtailment_or_electrical_loss"}
+        for row in result["verification_findings"]
+    )
+
+
 def test_thermal_dissipation_flags_persistent_excess_without_fitting_reference():
     rng = np.random.default_rng(4)
     n = 220
