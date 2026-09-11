@@ -6,6 +6,7 @@ from typing import Any, Iterable
 import numpy as np
 
 from ..tools import (
+    build_root_feature_rows,
     causal_graph_filter,
     contribution_analysis,
     fault_onset_timing,
@@ -92,11 +93,7 @@ def _top_roots(ranking: dict[str, Any], k: int = 3) -> list[str]:
     return [str(row["variable"]) for row in rows[:k] if "variable" in row]
 
 
-def _generic_prediction(
-    ranking: dict[str, Any],
-    *,
-    threshold: float,
-) -> dict[str, Any]:
+def _generic_prediction(ranking: dict[str, Any], *, threshold: float) -> dict[str, Any]:
     diagnosis = process_diagnosis(
         ranking.get("root_cause_ranking", []),
         ranking.get("propagation_paths", []),
@@ -207,11 +204,10 @@ def run_tep_root_cause_ablation(
     onset_persistence: int = 3,
     confidence_threshold: float = 0.18,
 ) -> dict[str, Any]:
-    """Compare generic and TEP-knowledge root-cause reasoning variants.
+    """Compare generic/knowledge variants and emit leakage-free calibration features.
 
-    The true fault ID and expected roots are used only to score predictions after
-    each variant has produced its root/fault decision. The catalog variant sees the
-    full catalog, not the true fault label.
+    True fault ID and expected roots are used only for scoring after predictions and
+    as calibration targets. Candidate features are computed without the true label.
     """
     x = _as_2d(signal_matrix)
     ref = _as_2d(normal_reference)
@@ -274,7 +270,7 @@ def run_tep_root_cause_ablation(
         **common_rank_kwargs,
     )
 
-    expected = [str(x) for x in expected_roots]
+    expected = [str(v) for v in expected_roots]
     raw_predictions = {
         "generic": _generic_prediction(ranking_generic, threshold=confidence_threshold),
         "topology_only": _generic_prediction(ranking_topology, threshold=confidence_threshold),
@@ -311,9 +307,26 @@ def run_tep_root_cause_ablation(
         if variant in raw_predictions
     ]
 
+    feature_rows = build_root_feature_rows(
+        names,
+        contribution_scores=contribution_scores,
+        shift_scores=shift["shift_scores"],
+        onset_order=onset["onset_order"],
+        process_topology=process_topology,
+        fault_catalog=fault_catalog,
+        fault_type_scores=type_evidence["fault_type_scores"],
+    )
+    calibration_record = {
+        "fault_id": int(fault_id),
+        "expected_roots": expected,
+        "candidates": feature_rows,
+        "fault_type_scores": type_evidence["fault_type_scores"],
+    }
+
     return {
         "predictions": predictions,
         "rows": [asdict(p) for p in predictions],
+        "calibration_record": calibration_record,
         "artifacts": {
             "selected_channels": names,
             "contribution_ranking": [names[int(i)] for i in np.argsort(contributions["variable_contributions"])[::-1][:5]],

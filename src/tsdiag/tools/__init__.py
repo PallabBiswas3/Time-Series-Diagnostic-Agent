@@ -32,6 +32,23 @@ from .monitoring import (
 from .process import causal_graph_filter, fault_onset_timing, process_diagnosis, root_cause_rank
 from .process_enhanced import pre_post_shift_evidence, root_cause_rank_enhanced, temporal_fault_type_evidence
 from .tep_reasoning import knowledge_guided_root_cause_decision, rank_tep_fault_catalog
+from .root_rank_calibration import (
+    FEATURE_NAMES,
+    RootRankerConfig,
+    catalog_feature_scores,
+    evaluate_root_ranker,
+    optimize_root_ranker,
+    predict_root,
+    score_root_candidates,
+    topology_upstreamness_scores,
+    weight_grid,
+)
+from .root_feature_screening import build_root_feature_rows_screened as build_root_feature_rows
+from .root_rank_screening import (
+    DEFAULT_ROOT_CANDIDATE_LIMIT,
+    cross_validate_root_ranker_screened as cross_validate_root_ranker,
+    screen_root_candidates,
+)
 from .change import change_point_detection, cross_sensor_relationships, rolling_statistics
 from .wavelet import (
     correlation_sensor_weighting,
@@ -53,7 +70,11 @@ __all__ = [
     "run_monitoring_method", "causal_graph_filter", "fault_onset_timing",
     "root_cause_rank", "root_cause_rank_enhanced", "pre_post_shift_evidence",
     "temporal_fault_type_evidence", "rank_tep_fault_catalog", "knowledge_guided_root_cause_decision",
-    "process_diagnosis", "rolling_statistics", "cross_sensor_relationships",
-    "change_point_detection", "wavelet_denoising", "cross_correlation_analysis",
-    "correlation_sensor_weighting", "multisensor_fusion", "default_tool_registry",
+    "FEATURE_NAMES", "RootRankerConfig", "build_root_feature_rows", "catalog_feature_scores",
+    "cross_validate_root_ranker", "DEFAULT_ROOT_CANDIDATE_LIMIT", "screen_root_candidates",
+    "evaluate_root_ranker", "optimize_root_ranker", "predict_root", "score_root_candidates",
+    "topology_upstreamness_scores", "weight_grid", "process_diagnosis",
+    "rolling_statistics", "cross_sensor_relationships", "change_point_detection",
+    "wavelet_denoising", "cross_correlation_analysis", "correlation_sensor_weighting",
+    "multisensor_fusion", "default_tool_registry",
 ]
