@@ -2,22 +2,38 @@
 
 ## Purpose
 
-PR #10 replaces manual root-score weighting with a reproducible calibration procedure. The benchmark first constructs six leakage-free candidate-root features, then optimizes their weights using fault-level cross-validation. True IDV labels are used only as calibration/evaluation targets; they are never used to build candidate features for a test fault.
+PR #10 replaces manual root-score weighting with a reproducible calibration procedure. The benchmark constructs six leakage-free candidate-root features, applies a fixed label-blind candidate screen, then optimizes scoring weights using fault-level cross-validation. True IDV labels are used only as calibration/evaluation targets; they are never used to construct a held-out fault's candidate features.
 
 ## Error taxonomy
 
 Every held-out top-1 mistake is assigned to one primary category:
 
-- **DOWNSTREAM_OVER_WEIGHTING** — propagated symptoms receive stronger contribution/shift evidence than the upstream cause.
+- **DOWNSTREAM_OVER_WEIGHTING** — propagated symptoms receive stronger evidence than the upstream cause.
 - **EARLY_NOISE_ONSET** — a downstream/noisy channel receives a much earlier onset score than the true root.
 - **CATALOG_AMBIGUITY** — multiple catalog mechanisms have nearly indistinguishable catalog/type support.
-- **WEAK_SIGNAL** — the expected root has weak pre/post shift evidence and is therefore difficult to localize reliably.
+- **WEAK_SIGNAL** — the expected root has weak observed evidence and is difficult to localize reliably.
 
-The benchmark writes both `tep_error_analysis_report.json` and `tep_error_analysis_report.md` so each failed IDV can be audited with its true-root rank, top wrong variable, component scores, and support gap.
+The benchmark writes both `tep_error_analysis_report.json` and `tep_error_analysis_report.md` with true-root rank, top wrong variable, component scores, support gap, and whether the true root survived candidate screening.
+
+## Candidate screening
+
+Candidate completeness and prediction are intentionally separated. The post-mortem record retains all global TEP catalog roots so an omitted true root can still be audited, but the calibrated ranker receives at most 24 variables selected without using the fault label. Screening is driven by observed pre/post shift, contribution, and onset evidence.
+
+```text
+all measured variables + global catalog roots for audit
+                    |
+       label-blind evidence screen
+                    |
+          <= 24 ranker candidates
+                    |
+       calibrated six-term ranker
+```
+
+In the final PR #10 benchmark, **candidate omission count was 0/16 known-root cases**. Thus the final localization errors are ranking/evidence errors rather than failures to make the true root available to the ranker.
 
 ## Calibrated scoring model
 
-For each candidate variable `v`, the calibrated score is
+For candidate variable `v`:
 
 ```text
 score(v) =
@@ -29,9 +45,9 @@ score(v) =
   + w6 * catalog_root_prior_score
 ```
 
-All six inputs are normalized to `[0, 1]` before scoring. The topology feature is derived from the sparse TEP process graph. Fault-type agreement is a blind temporal signature computed from the observed time-series shape. Catalog-root prior is computed against the complete catalog rather than the true fault record.
+All six inputs are normalized before scoring. The topology feature is derived from the sparse TEP process graph. Fault-type agreement is a blind temporal signature computed from observed data. The catalog prior is computed against the complete catalog rather than the true fault record.
 
-The frozen deployment weights selected after the fault-level cross-validation study are:
+Final deployment weights selected after the screened fault-level calibration are:
 
 | Feature | Weight |
 | --- | ---: |
@@ -39,41 +55,52 @@ The frozen deployment weights selected after the fault-level cross-validation st
 | Pre/post shift | 0.00 |
 | Onset earliness | 0.10 |
 | Topology upstreamness | 0.60 |
-| Fault-type agreement | 0.00 |
-| Catalog root prior | 0.30 |
+| Fault-type agreement | 0.10 |
+| Catalog root prior | 0.20 |
 
-These weights are intentionally frozen after PR #10. Future work should not tune them further on the same TEP test faults; CI regression gates are used instead.
+These weights are frozen after PR #10. They should not be tuned further on the same TEP benchmark faults.
 
 ## Cross-validation protocol
 
-The known-root TEP faults are partitioned by **fault ID**, not by time windows, to prevent the same fault mechanism appearing in both training and validation. The default benchmark uses four folds (approximately 12 training / 4 held-out known-root IDVs per fold for the 16 known-root cases).
+The 16 known-root TEP faults are partitioned by **fault ID**, not by time windows. Four-fold fault-level cross-validation is used so a held-out fault mechanism is not present in that fold's calibration set.
 
 For each fold:
 
-1. Build the six features for every candidate root without using the held-out IDV label.
-2. Search simplex weight combinations and an abstention-margin threshold on the training fault IDs.
-3. Maximize accepted Top-1 root accuracy subject to bounded abstention and false-confident diagnosis rates.
-4. Freeze that fold's configuration.
-5. Evaluate exactly once on the held-out fault IDs.
+1. Construct leakage-free evidence features.
+2. Apply the same label-blind 24-candidate screen.
+3. Search simplex weight combinations and an abstention margin on training fault IDs.
+4. Select a configuration subject to bounded abstention and false-confident diagnosis rates.
+5. Evaluate exactly once on held-out fault IDs.
 
-The final `src/tsdiag/config/calibrated_weights.json` is fitted on all known-root faults only after cross-validation metrics have been computed. It is therefore a deployment configuration; the reported generalization result is the out-of-fold metric, not the in-sample final-fit metric.
+Only after the out-of-fold result is computed is a final deployment configuration fitted on all known-root faults. The reported generalization result is therefore the held-out aggregate, not the in-sample final fit.
 
-## Benchmark comparison
+## Final benchmark comparison
 
 Canonical Braatz TEP known-root cases:
 
-| Root-cause method | Top-1 root accuracy | Top-3 root accuracy | Abstention rate | False-confident rate |
-| --- | ---: | ---: | ---: | ---: |
-| PR #9 topology + catalog | 0.3750 | 0.5625 | 0.2857 | 0.6250 |
-| PR #10 calibrated, held-out CV | **0.5625** | **0.7500** | **0.0000** | **0.4375** |
+| Root-cause method | Top-1 root accuracy | Raw Top-1 | Top-3 root accuracy | Abstention rate | False-confident rate |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| PR #9 topology + catalog | 0.3750 | — | 0.5625 | 0.2857 | 0.6250 |
+| PR #10 screened calibrated CV | **0.4375** | **0.5000** | **0.8125** | **0.0625** | **0.5000** |
 
-The PR #10 result is the aggregate out-of-fold score over 16 known-root IDV cases. The in-sample final fit is not used as the generalization claim.
+PR #10 therefore improves accepted Top-1 localization by **6.25 percentage points** and Top-3 localization by **25.0 percentage points** over PR #9, while lowering abstention and reducing the false-confident rate. The distinction between raw Top-1 (0.5000) and accepted Top-1 (0.4375) comes from one held-out case being abstained by the calibrated safety rule.
 
-Relative to PR #9, held-out Top-1 localization increased by 18.75 percentage points and Top-3 localization increased by 18.75 percentage points, while the false-confident rate decreased by 18.75 percentage points.
+## Post-mortem results
+
+The final held-out error analysis reports 8 raw top-1 ranking errors and no candidate omissions:
+
+| Failure category | Count |
+| --- | ---: |
+| WEAK_SIGNAL | 7 |
+| DOWNSTREAM_OVER_WEIGHTING | 1 |
+| EARLY_NOISE_ONSET | 0 |
+| CATALOG_AMBIGUITY | 0 |
+
+The dominant remaining limitation is therefore weak root evidence rather than missing candidates or catalog ambiguity. This is a useful stopping point scientifically: further TEP-specific tuning would risk benchmark overfitting, so these errors are retained as documented limitations for cross-domain work.
 
 ## Regression gates
 
-The GitHub Actions TEP benchmark now fails if a later change violates any of the following:
+The GitHub Actions TEP benchmark fails if a future change violates:
 
 ```text
 Top-1 root accuracy       > 0.375
@@ -82,7 +109,7 @@ Abstention rate           <= 0.35
 False-confident rate      <= 0.625
 ```
 
-These are regression-protection thresholds, not new optimization targets. TEP-specific logic should remain frozen unless a cross-domain change causes a real regression.
+The final PR #10 run passed all four gates with `0.4375 / 0.8125 / 0.0625 / 0.5000`, respectively.
 
 ## Generated artifacts
 
