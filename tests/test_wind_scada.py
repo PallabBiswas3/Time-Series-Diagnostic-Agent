@@ -122,6 +122,36 @@ def test_regime_aware_normal_behavior_flags_persistent_shift():
     assert detected["alarm_mask"][110:].mean() > 0.50
 
 
+def test_residual_persistence_does_not_chain_across_different_channels():
+    residuals = np.zeros((6, 3), dtype=float)
+    residuals[1, 0] = 5.0
+    residuals[2, 1] = 5.0
+    residuals[3, 2] = 5.0
+
+    detected = wind_residual_anomaly_detection(
+        residuals,
+        threshold=3.5,
+        persistence=3,
+    )
+
+    assert detected["raw_alarm_mask"][1:4].tolist() == [True, True, True]
+    assert not np.any(detected["alarm_mask"])
+
+
+def test_residual_persistence_detects_same_channel_run():
+    residuals = np.zeros((6, 3), dtype=float)
+    residuals[1:4, 1] = 5.0
+
+    detected = wind_residual_anomaly_detection(
+        residuals,
+        threshold=3.5,
+        persistence=3,
+    )
+
+    assert detected["alarm_mask"][3]
+    assert detected["persistent_channel_alarm_mask"][3, 1]
+
+
 def test_out_of_sample_residual_scale_stays_sane_on_healthy_holdout():
     rng = np.random.default_rng(17)
     n_ref = 800
@@ -155,8 +185,6 @@ def test_oos_residual_calibration_recenters_systematic_healthy_model_bias():
     n_ref = 700
     wind = rng.uniform(3.0, 14.0, n_ref)
     power = 18.0 * wind**2 + rng.normal(0.0, 20.0, n_ref)
-    # Add a nonlinear/noisy target so finite-tree prediction has a measurable
-    # out-of-sample residual offset rather than assuming exact zero centering.
     temp = 24.0 + 0.01 * power + 0.5 * np.sin(1.7 * wind) + rng.normal(0.25, 0.8, n_ref)
     ref = np.column_stack([wind, power, temp])
     regimes = (wind >= 8.0).astype(int)
@@ -170,8 +198,6 @@ def test_oos_residual_calibration_recenters_systematic_healthy_model_bias():
 
     prediction = predict_wind_normal_behavior(ref, regimes, state)
     z = prediction["normalized_residuals"][:, 0]
-    # Calibration should carry and subtract the healthy residual center rather
-    # than letting a non-zero model bias feed a sequential drift detector.
     assert np.isfinite(state.residual_center[0])
     assert abs(np.nanmedian(z)) < 0.5
 
