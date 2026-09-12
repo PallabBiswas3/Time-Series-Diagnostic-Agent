@@ -163,8 +163,6 @@ def _oos_residual_calibration(
         cal_mask[cal_idx] = True
         fit_mask[fit_idx] = True
 
-    # Very small references retain the safe in-sample fallback rather than
-    # inventing a calibration estimate from too few rows.
     if np.sum(cal_mask) < 10 or np.sum(fit_mask) < 20:
         return float("nan"), float("nan")
 
@@ -259,8 +257,6 @@ def fit_wind_normal_behavior_model(
             model = models.get((int(regime), target), global_model)
             expected_ref[valid_mask, target_pos] = model.predict(ref[valid_mask][:, feature_cols])
 
-    # Only use in-sample calibration as a fallback for tiny references where a
-    # meaningful held-out split is impossible.
     in_sample_residuals = ref[:, targets] - expected_ref
     fallback_center = np.nanmedian(in_sample_residuals, axis=0)
     fallback_scale = np.nanmedian(
@@ -355,22 +351,31 @@ def wind_residual_anomaly_detection(
     threshold: float = 3.5,
     persistence: int = 3,
 ) -> dict[str, Any]:
+    """Detect persistent large residuals without cross-channel persistence leakage.
+
+    Persistence is evaluated independently per channel. The aggregate alarm is
+    then the union of channels that individually satisfied the persistence rule.
+    This prevents alternating one-sample spikes on different channels from being
+    misclassified as one persistent anomaly episode.
+    """
     z = np.abs(_as_2d(normalized_residuals))
     per_channel = z >= float(threshold)
     score = np.nanmax(z, axis=1)
-    raw_alarm = np.any(per_channel, axis=1)
 
     k = max(1, int(persistence))
-    alarm = np.zeros_like(raw_alarm)
-    run = 0
-    for i, active in enumerate(raw_alarm):
-        run = run + 1 if active else 0
-        if run >= k:
-            alarm[i] = True
+    persistent_per_channel = np.zeros_like(per_channel, dtype=bool)
+    runs = np.zeros(per_channel.shape[1], dtype=int)
+    for i in range(per_channel.shape[0]):
+        runs = np.where(per_channel[i], runs + 1, 0)
+        persistent_per_channel[i] = runs >= k
+
+    raw_alarm = np.any(per_channel, axis=1)
+    alarm = np.any(persistent_per_channel, axis=1)
 
     return {
         "anomaly_scores": score,
         "channel_alarm_mask": per_channel,
+        "persistent_channel_alarm_mask": persistent_per_channel,
         "raw_alarm_mask": raw_alarm,
         "alarm_mask": alarm,
         "threshold": float(threshold),
