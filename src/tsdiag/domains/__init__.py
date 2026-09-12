@@ -1,6 +1,7 @@
 from .bearing import BEARING_PACK
 from .bearing_runner import BearingDiagnosticPipeline
 from .process import PROCESS_PACK
+from .process_engine import ProcessEngineConfig, ProcessExecutionPipeline
 from .process_runner import ProcessDiagnosticPipeline, ProcessDiagnosticResult
 from .wind_scada import WIND_SCADA_PACK
 from .battery import BATTERY_PACK
@@ -36,6 +37,8 @@ __all__ = [
     "BEARING_PACK",
     "BearingDiagnosticPipeline",
     "PROCESS_PACK",
+    "ProcessEngineConfig",
+    "ProcessExecutionPipeline",
     "ProcessDiagnosticPipeline",
     "ProcessDiagnosticResult",
     "WIND_SCADA_PACK",
