@@ -9,7 +9,7 @@ import numpy as np
 @dataclass(frozen=True)
 class ResidualCUSUMConfig:
     # k=0.5 is the standard half-sigma reference value for detecting an
-    # approximately one-sigma persistent mean shift.  The previous 0.25 value
+    # approximately one-sigma persistent mean shift. The previous 0.25 value
     # was too eager when several SCADA residual channels were monitored in
     # parallel.
     drift: float = 0.5
@@ -17,6 +17,10 @@ class ResidualCUSUMConfig:
     reset_after_alarm: bool = True
     hold_samples: int = 6
     two_sided: bool = True
+    # Aggregate multichannel alarms should require corroboration when requested,
+    # while preserving every per-channel crossing for localization/evidence.
+    # Generic/univariate CUSUM keeps the backwards-compatible value of 1.
+    min_channel_support: int = 1
 
 
 def _as_2d(x) -> np.ndarray:
@@ -41,11 +45,19 @@ def residual_cusum(
     operating-boundary samples (for example, a regime transition). Accumulators
     are cleared at those boundaries so a normal change in operating point cannot
     be integrated into a false persistent fault.
+
+    Per-channel CUSUM crossings are always retained. ``min_channel_support``
+    controls only the aggregate alarm stream, preventing the family-wise false
+    alarm inflation caused by taking a simple union over many monitored channels.
     """
     cfg = config or ResidualCUSUMConfig()
     x = _as_2d(normalized_residuals)
     x = np.where(np.isfinite(x), x, 0.0)
     n, d = x.shape
+
+    min_support = max(1, int(cfg.min_channel_support))
+    if d:
+        min_support = min(min_support, d)
 
     ts = None
     if timestamps is not None:
@@ -83,14 +95,23 @@ def residual_cusum(
             pos[triggered] = 0.0
             neg[triggered] = 0.0
 
-    aggregate_points = np.any(point_mask, axis=1)
+    channel_support_count = np.sum(point_mask, axis=1).astype(int)
+    channel_support_fraction = channel_support_count / max(d, 1)
+    aggregate_points = channel_support_count >= min_support
+
     hold = np.zeros(n, dtype=bool)
     hold_samples = max(1, int(cfg.hold_samples))
     for idx in np.flatnonzero(aggregate_points):
         hold[idx:min(n, idx + hold_samples)] = True
 
     strength = np.maximum(pos_history, neg_history)
-    score = np.nanmax(strength, axis=1) if d else np.zeros(n)
+    channel_max_score = np.nanmax(strength, axis=1) if d else np.zeros(n)
+    if d:
+        sorted_strength = np.sort(strength, axis=1)
+        aggregate_score = sorted_strength[:, -min_support]
+    else:
+        aggregate_score = np.zeros(n)
+
     change_points = np.flatnonzero(aggregate_points).astype(int).tolist()
     channel_change_points = {
         int(j): np.flatnonzero(point_mask[:, j]).astype(int).tolist()
@@ -119,8 +140,12 @@ def residual_cusum(
         "channel_change_points": channel_change_points,
         "channel_change_point_timestamps": channel_change_point_timestamps,
         "change_point_mask": aggregate_points,
+        "channel_change_point_mask": point_mask,
+        "channel_support_count": channel_support_count,
+        "channel_support_fraction": channel_support_fraction,
         "alarm_mask": hold,
-        "cusum_scores": score,
+        "cusum_scores": aggregate_score,
+        "channel_max_cusum_scores": channel_max_score,
         "positive_cusum": pos_history,
         "negative_cusum": neg_history,
         "reset_mask": resets,
@@ -130,5 +155,6 @@ def residual_cusum(
             "reset_after_alarm": bool(cfg.reset_after_alarm),
             "hold_samples": hold_samples,
             "two_sided": bool(cfg.two_sided),
+            "min_channel_support": min_support,
         },
     }
