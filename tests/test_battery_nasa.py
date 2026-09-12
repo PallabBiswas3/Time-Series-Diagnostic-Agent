@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from tsdiag.benchmarks.battery_nasa import BatteryPrognosisCase, _summary
 from tsdiag.domains.battery_runner import BatteryPrognosticPipeline
 from tsdiag.tools.battery import capacity_health_features, estimate_capacity_rul
 
@@ -52,3 +53,56 @@ def test_future_values_do_not_change_prefix_prediction():
     assert first.prognosis is not None and second.prognosis is not None
     assert first.prognosis.remaining_useful_life == second.prognosis.remaining_useful_life
     assert first.prognosis.details["predicted_eol_cycle"] == second.prognosis.details["predicted_eol_cycle"]
+
+
+def test_right_censored_cases_are_scored_separately_from_point_rul_error():
+    exact = BatteryPrognosisCase(
+        battery_id="observed",
+        observation_cycle=100,
+        observed_capacity_ah=1.5,
+        observed_soh=0.75,
+        eol_observed=True,
+        last_observed_cycle=140,
+        true_eol_cycle=120,
+        true_rul_cycles=20,
+        censoring_lower_bound_rul_cycles=None,
+        predicted_rul_cycles=25.0,
+        predicted_eol_cycle=125.0,
+        absolute_error_cycles=5.0,
+        relative_error=0.25,
+        censoring_consistent=None,
+        censoring_margin_cycles=None,
+        uncertainty_cycles=3.0,
+        confidence=0.8,
+        abstained=False,
+        abstain_reason=None,
+        runtime_seconds=0.01,
+    )
+    censored = BatteryPrognosisCase(
+        battery_id="censored",
+        observation_cycle=100,
+        observed_capacity_ah=1.55,
+        observed_soh=0.775,
+        eol_observed=False,
+        last_observed_cycle=168,
+        true_eol_cycle=None,
+        true_rul_cycles=None,
+        censoring_lower_bound_rul_cycles=68,
+        predicted_rul_cycles=80.0,
+        predicted_eol_cycle=180.0,
+        absolute_error_cycles=None,
+        relative_error=None,
+        censoring_consistent=True,
+        censoring_margin_cycles=12.0,
+        uncertainty_cycles=5.0,
+        confidence=0.7,
+        abstained=False,
+        abstain_reason=None,
+        runtime_seconds=0.01,
+    )
+
+    summary = _summary([exact, censored])
+    assert summary["mae_cycles"] == 5.0
+    assert summary["point_error_metrics"]["case_count"] == 1
+    assert summary["censoring_metrics"]["case_count"] == 1
+    assert summary["censoring_metrics"]["consistency_rate_on_predictions"] == 1.0
