@@ -5,7 +5,12 @@ from pathlib import Path
 import numpy as np
 from scipy.io import savemat
 
-from tsdiag.benchmarks.bearing_cwru import BearingWindowResult, _aggregate_record
+from tsdiag.benchmarks.bearing_cwru import (
+    BearingRecordResult,
+    BearingWindowResult,
+    _aggregate_record,
+    _summary,
+)
 from tsdiag.datasets.bearing_cwru import (
     CWRU_DE_FREQUENCY_MULTIPLIERS,
     CWRUBearingRecord,
@@ -84,3 +89,35 @@ def test_record_aggregation_requires_majority_coverage_and_no_tie():
     assert coverage < 0.5
     assert prediction == "abstain"
     assert abstained is True
+
+
+def _record(file_id: int, truth: str, pred: str, load_hp: int = 0) -> BearingRecordResult:
+    return BearingRecordResult(
+        file_id=file_id,
+        load_hp=load_hp,
+        rpm=1800.0,
+        true_label=truth,
+        predicted_label=pred,
+        abstained=pred == "abstain",
+        confidence=0.8 if pred != "abstain" else 0.0,
+        window_count=6,
+        diagnose_fraction=1.0 if pred != "abstain" else 0.0,
+        abnormal_fraction=1.0 if pred not in {"normal", "abstain"} else 0.0,
+        vote_margin=1.0,
+        runtime_seconds=0.1,
+    )
+
+
+def test_summary_masks_before_reducing_false_alarm_and_fault_detection_metrics():
+    records = [
+        _record(1, "normal", "normal"),
+        _record(2, "normal", "outer_race"),
+        _record(3, "normal", "abstain"),
+        _record(4, "normal", "normal"),
+        _record(5, "outer_race", "outer_race"),
+        _record(6, "inner_race", "abstain"),
+    ]
+    summary = _summary(records)
+    assert summary["normal_false_alarm_rate"] == 0.25
+    assert summary["normal_abstention_rate"] == 0.25
+    assert summary["fault_detection_rate"] == 0.5
