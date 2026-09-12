@@ -107,6 +107,7 @@ class WindNormalBehaviorState:
     predictor_indices: list[int]
     models: dict[tuple[int, int], HistGradientBoostingRegressor]
     global_models: dict[int, HistGradientBoostingRegressor]
+    residual_center: np.ndarray
     residual_scale: np.ndarray
     regime_ids: list[int]
 
@@ -132,7 +133,7 @@ def _subsample_indices(idx: np.ndarray, maximum: int) -> np.ndarray:
     return idx[positions]
 
 
-def _oos_residual_scale(
+def _oos_residual_calibration(
     ref: np.ndarray,
     regimes: np.ndarray,
     target: int,
@@ -141,14 +142,15 @@ def _oos_residual_scale(
     *,
     max_train_samples_per_regime: int,
     random_state: int,
-) -> float:
-    """Estimate healthy prediction error on rows not used to fit the calibrator.
+) -> tuple[float, float]:
+    """Estimate healthy residual center and scale on out-of-sample rows.
 
-    The previous implementation normalized deployment residuals by in-sample
-    training error. Tree models can make that error unrealistically small and
-    turn ordinary unseen SCADA into many-sigma residuals. We use a deterministic
-    stratified 20% holdout solely to estimate residual scale, then fit the final
-    deployment models on all healthy rows.
+    Tree normal-behavior models need both a deployment residual scale and a
+    healthy residual center. CUSUM assumes its input is centered around zero;
+    dividing an ordinary model bias by a robust scale without subtracting that
+    bias turns healthy prediction error into persistent drift. A deterministic
+    stratified 20% holdout estimates both values, after which final deployment
+    models are still fit on all healthy rows.
     """
     fit_mask = np.zeros(ref.shape[0], dtype=bool)
     cal_mask = np.zeros(ref.shape[0], dtype=bool)
@@ -161,9 +163,10 @@ def _oos_residual_scale(
         cal_mask[cal_idx] = True
         fit_mask[fit_idx] = True
 
-    # Very small references retain the old safe fallback rather than failing.
+    # Very small references retain the safe in-sample fallback rather than
+    # inventing a calibration estimate from too few rows.
     if np.sum(cal_mask) < 10 or np.sum(fit_mask) < 20:
-        return float("nan")
+        return float("nan"), float("nan")
 
     global_fit = np.flatnonzero(fit_mask)
     global_model = _new_nbm(random_state)
@@ -184,12 +187,12 @@ def _oos_residual_scale(
     residual = ref[cal_mask, target] - expected[cal_mask]
     residual = residual[np.isfinite(residual)]
     if residual.size < 10:
-        return float("nan")
-    center = np.nanmedian(residual)
+        return float("nan"), float("nan")
+    center = float(np.nanmedian(residual))
     scale = float(np.nanmedian(np.abs(residual - center)) * 1.4826)
     if not np.isfinite(scale) or scale < 1e-12:
         scale = float(np.nanstd(residual))
-    return scale
+    return center, scale
 
 
 def fit_wind_normal_behavior_model(
@@ -214,6 +217,7 @@ def fit_wind_normal_behavior_model(
     models: dict[tuple[int, int], HistGradientBoostingRegressor] = {}
     global_models: dict[int, HistGradientBoostingRegressor] = {}
     expected_ref = np.full((ref.shape[0], len(targets)), np.nan)
+    centers = np.full(len(targets), np.nan)
     scales = np.full(len(targets), np.nan)
 
     for target_pos, target in enumerate(targets):
@@ -224,7 +228,7 @@ def fit_wind_normal_behavior_model(
         if np.sum(valid) < 10:
             raise ValueError(f"insufficient finite reference samples for target {target}")
 
-        scales[target_pos] = _oos_residual_scale(
+        centers[target_pos], scales[target_pos] = _oos_residual_calibration(
             ref,
             regimes,
             target,
@@ -255,15 +259,19 @@ def fit_wind_normal_behavior_model(
             model = models.get((int(regime), target), global_model)
             expected_ref[valid_mask, target_pos] = model.predict(ref[valid_mask][:, feature_cols])
 
-    # Only use in-sample residuals as a fallback for tiny references where a
-    # meaningful held-out calibration split is impossible.
+    # Only use in-sample calibration as a fallback for tiny references where a
+    # meaningful held-out split is impossible.
     in_sample_residuals = ref[:, targets] - expected_ref
-    fallback = np.nanmedian(
-        np.abs(in_sample_residuals - np.nanmedian(in_sample_residuals, axis=0)), axis=0
+    fallback_center = np.nanmedian(in_sample_residuals, axis=0)
+    fallback_scale = np.nanmedian(
+        np.abs(in_sample_residuals - fallback_center), axis=0
     ) * 1.4826
     fallback_std = np.nanstd(in_sample_residuals, axis=0)
-    fallback = np.where(fallback < 1e-12, fallback_std, fallback)
-    residual_scale = np.where(np.isfinite(scales) & (scales >= 1e-12), scales, fallback)
+    fallback_scale = np.where(fallback_scale < 1e-12, fallback_std, fallback_scale)
+
+    residual_center = np.where(np.isfinite(centers), centers, fallback_center)
+    residual_center = np.where(np.isfinite(residual_center), residual_center, 0.0)
+    residual_scale = np.where(np.isfinite(scales) & (scales >= 1e-12), scales, fallback_scale)
     residual_scale = np.where(np.isfinite(residual_scale) & (residual_scale >= 1e-12), residual_scale, 1.0)
 
     return WindNormalBehaviorState(
@@ -271,7 +279,8 @@ def fit_wind_normal_behavior_model(
         predictor_indices=predictors,
         models=models,
         global_models=global_models,
-        residual_scale=residual_scale,
+        residual_center=np.asarray(residual_center, dtype=float),
+        residual_scale=np.asarray(residual_scale, dtype=float),
         regime_ids=[int(v) for v in np.unique(regimes)],
     )
 
@@ -297,12 +306,13 @@ def predict_wind_normal_behavior(signal_matrix, regime_ids, state: WindNormalBeh
 
     observed = x[:, state.target_indices]
     residuals = observed - expected
-    normalized = residuals / state.residual_scale
+    normalized = (residuals - state.residual_center) / state.residual_scale
     uncertainty = np.tile(state.residual_scale, (x.shape[0], 1))
     return {
         "expected_signal": expected,
         "observed_signal": observed,
         "residuals": residuals,
+        "residual_center": np.asarray(state.residual_center, dtype=float),
         "normalized_residuals": normalized,
         "model_uncertainty": uncertainty,
         "target_indices": list(state.target_indices),
@@ -334,6 +344,7 @@ def normal_behavior_model(
         "expected_signal": prediction["expected_signal"],
         "model_uncertainty": prediction["model_uncertainty"],
         "normal_behavior_state": state,
+        "residual_center": prediction["residual_center"],
         "normalized_residuals": prediction["normalized_residuals"],
     }
 
