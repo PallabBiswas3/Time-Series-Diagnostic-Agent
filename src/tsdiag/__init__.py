@@ -16,6 +16,7 @@ from .core import (
     DeterministicRouter,
     DiagnosticRuntime,
 )
+from .service import DiagnosticService
 from .verification import (
     Verifier,
     VerificationSuite,
@@ -54,6 +55,7 @@ __all__ = [
     "RouterPolicy",
     "DeterministicRouter",
     "DiagnosticRuntime",
+    "DiagnosticService",
     "Verifier",
     "VerificationSuite",
     "DataQualityVerifier",
