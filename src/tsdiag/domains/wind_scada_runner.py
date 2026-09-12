@@ -40,6 +40,7 @@ class WindScadaDiagnosticPipeline:
         cusum_drift: float = 0.5,
         cusum_threshold: float = 10.0,
         cusum_hold_samples: int = 6,
+        cusum_min_channel_support: int = 2,
         physics_config: WindPhysicsConfig | None = None,
         random_state: int = 0,
     ):
@@ -50,6 +51,7 @@ class WindScadaDiagnosticPipeline:
             drift=float(cusum_drift),
             threshold=float(cusum_threshold),
             hold_samples=int(cusum_hold_samples),
+            min_channel_support=int(cusum_min_channel_support),
         )
         self.physics_config = physics_config or WindPhysicsConfig()
         self.random_state = int(random_state)
