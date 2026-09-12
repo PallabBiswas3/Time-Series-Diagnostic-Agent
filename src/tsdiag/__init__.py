@@ -1,14 +1,36 @@
-from .models import SignalRecord, Evidence, AgentResult, DiagnosticReport
+from .models import SignalRecord, Evidence, AgentResult, DiagnosticReport, DiagnosticResult
 from .agents import IndustrialDiagnosticOrchestrator
 from .contracts import DataKind, TaskKind, ToolContract, DomainPack, ToolRegistry
-from .domains import DOMAIN_PACKS, get_domain_pack
+from .domains import DOMAIN_PACKS, get_domain_pack, run_bearing_request, run_process_request
 from .domains.planner import DomainExecutionPlan, build_execution_plan, describe_contract
+from .core import (
+    RunRequest,
+    RunContext,
+    EvidenceStore,
+    ToolOutcome,
+    ExecutionResult,
+    ExecutionEngine,
+    PlanStep,
+    ExecutionPlan,
+    RouterPolicy,
+    DeterministicRouter,
+    DiagnosticRuntime,
+)
+from .service import DiagnosticService
+from .verification import (
+    Verifier,
+    VerificationSuite,
+    DataQualityVerifier,
+    OODVerifier,
+    PhysicalBoundsVerifier,
+)
 
 __all__ = [
     "SignalRecord",
     "Evidence",
     "AgentResult",
     "DiagnosticReport",
+    "DiagnosticResult",
     "IndustrialDiagnosticOrchestrator",
     "DataKind",
     "TaskKind",
@@ -17,7 +39,26 @@ __all__ = [
     "ToolRegistry",
     "DOMAIN_PACKS",
     "get_domain_pack",
+    "run_bearing_request",
+    "run_process_request",
     "DomainExecutionPlan",
     "build_execution_plan",
     "describe_contract",
+    "RunRequest",
+    "RunContext",
+    "EvidenceStore",
+    "ToolOutcome",
+    "ExecutionResult",
+    "ExecutionEngine",
+    "PlanStep",
+    "ExecutionPlan",
+    "RouterPolicy",
+    "DeterministicRouter",
+    "DiagnosticRuntime",
+    "DiagnosticService",
+    "Verifier",
+    "VerificationSuite",
+    "DataQualityVerifier",
+    "OODVerifier",
+    "PhysicalBoundsVerifier",
 ]

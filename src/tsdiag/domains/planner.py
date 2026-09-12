@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..contracts import DomainPack, ToolContract
+from ..contracts import DomainPack
+from ..core.context import RunContext, RunRequest
+from ..core.planning import DeterministicRouter
 from . import DOMAIN_PACKS
 
 
@@ -22,15 +24,17 @@ def build_execution_plan(domain: str, metadata: dict[str, Any] | None = None) ->
         raise KeyError(f"Unknown domain {domain!r}. Available: {sorted(DOMAIN_PACKS)}")
 
     pack = DOMAIN_PACKS[domain]
-    missing = tuple(name for name in pack.required_metadata if metadata.get(name) is None)
+    request = RunRequest(domain=domain, task="diagnosis", observation=object(), metadata=metadata)
+    context = RunContext.from_request(request)
+    plan = DeterministicRouter().plan(pack, context)
     optional = tuple(name for name in pack.optional_metadata if metadata.get(name) is not None)
 
     return DomainExecutionPlan(
-        domain=domain,
-        tool_sequence=pack.tool_names(),
-        missing_required_metadata=missing,
+        domain=plan.domain,
+        tool_sequence=plan.tool_sequence,
+        missing_required_metadata=plan.missing_required_metadata,
         available_optional_metadata=optional,
-        ready=not missing,
+        ready=plan.ready,
     )
 
 
