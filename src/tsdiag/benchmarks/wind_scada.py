@@ -30,10 +30,19 @@ class WindBenchmarkEventResult:
     asset_id: str
     true_label: str
     event_detected: bool
+    event_decision: str
+    abstained: bool
+    event_evidence_score: float
+    decision_confidence: float
+    decision_reason: str
+    legacy_criticality_detected: bool
     max_criticality: int
     alarm_fraction: float
     residual_alarm_fraction: float
     drift_alarm_fraction: float
+    corroborated_alarm_fraction: float
+    longest_corroborated_run: int
+    out_of_distribution_fraction: float
     fused_alarm_fraction: float
     event_window_recall: float | None
     first_detection_index: int | None
@@ -86,7 +95,7 @@ def _write_summary_markdown(payload: dict, path: Path) -> None:
         "",
         f"Source: CARE to Compare v6 (`{CARE_DOI}`).",
         "",
-        "## Primary results",
+        "## Primary evidence-decision results",
         "",
         "| Metric | Result |",
         "| --- | ---: |",
@@ -96,12 +105,30 @@ def _write_summary_markdown(payload: dict, path: Path) -> None:
         f"| Event precision | {_fmt(summary.get('event_precision'))} |",
         f"| Event F1 | {_fmt(summary.get('event_f1'))} |",
         f"| Normal-event false alarm rate | {_fmt(summary.get('normal_event_false_alarm_rate'))} |",
-        f"| Mean anomaly-window recall | {_fmt(summary.get('mean_event_window_recall'))} |",
-        f"| Mean early-warning lead time (min) | {_fmt(summary.get('mean_lead_time_minutes'), 1)} |",
-        f"| Median early-warning lead time (min) | {_fmt(summary.get('median_lead_time_minutes'), 1)} |",
+        f"| Abstention rate | {_fmt(summary.get('abstention_rate'))} |",
+        f"| Covered-anomaly recall | {_fmt(summary.get('covered_anomaly_recall'))} |",
+        f"| Mean evidence score, anomaly | {_fmt(summary.get('mean_evidence_score_anomaly'))} |",
+        f"| Mean evidence score, normal | {_fmt(summary.get('mean_evidence_score_normal'))} |",
+        f"| Mean OOD fraction, anomaly | {_fmt(summary.get('mean_ood_fraction_anomaly'))} |",
+        f"| Mean OOD fraction, normal | {_fmt(summary.get('mean_ood_fraction_normal'))} |",
+        "",
+        "## Legacy CARE-criticality comparison",
+        "",
+        "| Metric | Result |",
+        "| --- | ---: |",
+        f"| Legacy event recall | {_fmt(summary.get('legacy_criticality_recall'))} |",
+        f"| Legacy event precision | {_fmt(summary.get('legacy_criticality_precision'))} |",
+        f"| Legacy event F1 | {_fmt(summary.get('legacy_criticality_f1'))} |",
+        f"| Legacy normal-event FAR | {_fmt(summary.get('legacy_normal_event_false_alarm_rate'))} |",
         f"| Mean max CARE-style criticality | {_fmt(summary.get('mean_max_criticality'), 2)} |",
         f"| Mean anomaly-event criticality | {_fmt(summary.get('mean_anomaly_event_criticality'), 2)} |",
         f"| Mean normal-event criticality | {_fmt(summary.get('mean_normal_event_criticality'), 2)} |",
+        "",
+        "## Sample-level diagnostics",
+        "",
+        f"| Mean anomaly-window recall | {_fmt(summary.get('mean_event_window_recall'))} |",
+        f"| Mean early-warning lead time (min) | {_fmt(summary.get('mean_lead_time_minutes'), 1)} |",
+        f"| Median early-warning lead time (min) | {_fmt(summary.get('median_lead_time_minutes'), 1)} |",
         f"| Mean residual alarm fraction | {_fmt(summary.get('mean_residual_alarm_fraction'))} |",
         f"| Mean CUSUM alarm fraction | {_fmt(summary.get('mean_drift_alarm_fraction'))} |",
         f"| Mean fused alarm fraction | {_fmt(summary.get('mean_fused_alarm_fraction'))} |",
@@ -116,9 +143,14 @@ def _write_summary_markdown(payload: dict, path: Path) -> None:
         f"- Residual persistence: {cfg['persistence']}",
         f"- CUSUM drift allowance: {cfg['cusum_drift']}",
         f"- CUSUM threshold: {cfg['cusum_threshold']}",
-        f"- CARE-style criticality threshold: {cfg['criticality_threshold']}",
-        "- Event labels are used only for evaluation. Training rows are filtered using operator/status healthy labels.",
-        "- Physics checks are verification evidence; missing anonymized turbine specifications disable only the corresponding bound.",
+        f"- Legacy CARE-style criticality threshold: {cfg['criticality_threshold']}",
+        f"- Event minimum corroborated run: {cfg['event_minimum_corroborated_run']} samples",
+        f"- Event minimum residual fraction: {cfg['event_minimum_residual_fraction']}",
+        f"- Event minimum drift fraction: {cfg['event_minimum_drift_fraction']}",
+        f"- Event OOD abstention fraction: {cfg['event_ood_abstain_fraction']}",
+        "- Event labels are used only for evaluation. Event evidence decisions use detector, regime-support and physics outputs only.",
+        "- OOD operation causes abstention rather than being counted as positive fault evidence.",
+        "- Legacy criticality is reported side-by-side but is not the primary event classifier.",
         "",
         "## Event failures",
         "",
@@ -145,6 +177,10 @@ def run_care_benchmark(
     cusum_threshold: float = 8.0,
     cusum_hold_samples: int = 6,
     criticality_threshold: int = 72,
+    event_minimum_corroborated_run: int = 6,
+    event_minimum_residual_fraction: float = 0.02,
+    event_minimum_drift_fraction: float = 0.02,
+    event_ood_abstain_fraction: float = 0.10,
     output_dir: str | Path | None = None,
 ) -> dict:
     root = Path(data_dir)
@@ -193,21 +229,41 @@ def run_care_benchmark(
             else:
                 pred_normal = care_normal_mask(event_data.prediction)
 
+            cp = result.artifacts.get("residual_changepoint", {})
+            physics = result.artifacts.get("physics_consistency", {})
+            fusion = result.artifacts.get("fusion", {})
+            anomaly = result.artifacts.get("anomaly_detection", {})
+            regime_assignment = result.artifacts.get("regime_assignment", {})
+
+            residual_alarm_mask = np.asarray(anomaly.get("alarm_mask", result.alarm_mask), dtype=bool)
+            drift_alarm_mask = np.asarray(cp.get("alarm_mask", result.alarm_mask), dtype=bool)
+            ood_mask = np.asarray(
+                regime_assignment.get("out_of_distribution_mask", np.zeros(len(prediction), dtype=bool)),
+                dtype=bool,
+            )
+            physics_count = len(physics.get("verification_findings", []))
+
             evaluation = evaluate_wind_event(
                 event_id=event_id,
                 is_anomaly_event=bool(event_data.event.is_anomaly),
                 alarm_mask=result.alarm_mask,
+                residual_alarm_mask=residual_alarm_mask,
+                drift_alarm_mask=drift_alarm_mask,
+                out_of_distribution_mask=ood_mask,
+                physics_finding_count=physics_count,
                 timestamps=pred_ts,
                 event_start=event_data.event.event_start,
                 event_end=event_data.event.event_end,
                 normal_mask=pred_normal,
                 criticality_threshold=criticality_threshold,
                 sample_period_minutes=CARE_SAMPLE_PERIOD_MINUTES,
+                minimum_corroborated_run=event_minimum_corroborated_run,
+                minimum_residual_fraction=event_minimum_residual_fraction,
+                minimum_drift_fraction=event_minimum_drift_fraction,
+                ood_abstain_fraction=event_ood_abstain_fraction,
             )
             evaluation_rows.append(evaluation)
-            cp = result.artifacts.get("residual_changepoint", {})
-            physics = result.artifacts.get("physics_consistency", {})
-            fusion = result.artifacts.get("fusion", {})
+
             event_rows.append(
                 WindBenchmarkEventResult(
                     event_id=event_id,
@@ -215,17 +271,26 @@ def run_care_benchmark(
                     asset_id=event_data.event.asset_id,
                     true_label="anomaly" if event_data.event.is_anomaly else "normal",
                     event_detected=evaluation.event_detected,
+                    event_decision=evaluation.event_decision,
+                    abstained=evaluation.abstained,
+                    event_evidence_score=evaluation.evidence_score,
+                    decision_confidence=evaluation.decision_confidence,
+                    decision_reason=evaluation.decision_reason,
+                    legacy_criticality_detected=evaluation.legacy_criticality_detected,
                     max_criticality=evaluation.max_criticality,
                     alarm_fraction=evaluation.alarm_fraction,
-                    residual_alarm_fraction=float(fusion.get("residual_alarm_fraction", 0.0)),
-                    drift_alarm_fraction=float(fusion.get("drift_alarm_fraction", 0.0)),
+                    residual_alarm_fraction=evaluation.residual_alarm_fraction,
+                    drift_alarm_fraction=evaluation.drift_alarm_fraction,
+                    corroborated_alarm_fraction=evaluation.corroborated_alarm_fraction,
+                    longest_corroborated_run=evaluation.longest_corroborated_run,
+                    out_of_distribution_fraction=evaluation.out_of_distribution_fraction,
                     fused_alarm_fraction=float(fusion.get("fused_alarm_fraction", 0.0)),
                     event_window_recall=evaluation.event_window_recall,
                     first_detection_index=evaluation.first_detection_index,
                     lead_time_minutes=evaluation.lead_time_minutes,
                     affected_channels=result.affected_channels,
                     change_point_count=len(cp.get("change_points", [])),
-                    physics_finding_count=len(physics.get("verification_findings", [])),
+                    physics_finding_count=physics_count,
                     confidence=result.confidence,
                     tool_call_count=len(result.tool_trace),
                     runtime_seconds=float(runtime),
@@ -265,6 +330,10 @@ def run_care_benchmark(
             "cusum_threshold": float(cusum_threshold),
             "cusum_hold_samples": int(cusum_hold_samples),
             "criticality_threshold": int(criticality_threshold),
+            "event_minimum_corroborated_run": int(event_minimum_corroborated_run),
+            "event_minimum_residual_fraction": float(event_minimum_residual_fraction),
+            "event_minimum_drift_fraction": float(event_minimum_drift_fraction),
+            "event_ood_abstain_fraction": float(event_ood_abstain_fraction),
         },
         "summary": summary,
         "events": [asdict(row) for row in event_rows],
@@ -313,6 +382,10 @@ def main():
     parser.add_argument("--cusum-threshold", type=float, default=8.0)
     parser.add_argument("--cusum-hold-samples", type=int, default=6)
     parser.add_argument("--criticality-threshold", type=int, default=72)
+    parser.add_argument("--event-minimum-corroborated-run", type=int, default=6)
+    parser.add_argument("--event-minimum-residual-fraction", type=float, default=0.02)
+    parser.add_argument("--event-minimum-drift-fraction", type=float, default=0.02)
+    parser.add_argument("--event-ood-abstain-fraction", type=float, default=0.10)
     parser.add_argument("--output-dir", default="outputs/wind_benchmark")
     args = parser.parse_args()
 
@@ -327,6 +400,10 @@ def main():
         cusum_threshold=args.cusum_threshold,
         cusum_hold_samples=args.cusum_hold_samples,
         criticality_threshold=args.criticality_threshold,
+        event_minimum_corroborated_run=args.event_minimum_corroborated_run,
+        event_minimum_residual_fraction=args.event_minimum_residual_fraction,
+        event_minimum_drift_fraction=args.event_minimum_drift_fraction,
+        event_ood_abstain_fraction=args.event_ood_abstain_fraction,
         output_dir=args.output_dir,
     )
     print(json.dumps(result["summary"], indent=2))
