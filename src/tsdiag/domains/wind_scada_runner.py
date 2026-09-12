@@ -57,22 +57,137 @@ class WindScadaDiagnosticPipeline:
         self.random_state = int(random_state)
 
     @staticmethod
-    def _driver_indices(channel_names: list[str], matrix: np.ndarray) -> list[int]:
-        lowered = [name.lower() for name in channel_names]
-        preferred = []
-        for tokens in (("wind", "speed"), ("power",), ("rotation",), ("rotor", "speed")):
+    def _first_matching_index(
+        channel_names: list[str],
+        token_groups: Iterable[Iterable[str]],
+        *,
+        excluded_tokens: Iterable[str] = (),
+        used: set[int] | None = None,
+    ) -> int | None:
+        lowered = [str(name).lower() for name in channel_names]
+        excluded = tuple(str(token).lower() for token in excluded_tokens)
+        occupied = set() if used is None else set(used)
+        for tokens in token_groups:
+            required = tuple(str(token).lower() for token in tokens)
             for i, name in enumerate(lowered):
-                if all(token in name for token in tokens) and i not in preferred:
-                    preferred.append(i)
-                    break
+                if i in occupied:
+                    continue
+                if excluded and any(token in name for token in excluded):
+                    continue
+                if all(token in name for token in required):
+                    return i
+        return None
+
+    @classmethod
+    def _driver_selection(
+        cls,
+        channel_names: list[str],
+        matrix: np.ndarray,
+        max_drivers: int = 4,
+    ) -> tuple[list[int], dict[str, int]]:
+        """Resolve physically meaningful operating-regime drivers.
+
+        The earlier generic ``"power"`` match could select reactive or apparent
+        power before generated active power. That changes regime geometry without
+        representing turbine operating load. Driver resolution is now role-aware,
+        excludes reactive/apparent/power-factor channels, and records the chosen
+        semantic role for auditability.
+        """
+        used: set[int] = set()
+        roles: dict[str, int] = {}
+        selected: list[int] = []
+
+        role_specs = (
+            (
+                "wind_speed",
+                (("wind", "speed"),),
+                (),
+            ),
+            (
+                "active_power",
+                (
+                    ("active", "power"),
+                    ("real", "power"),
+                    ("electrical", "power"),
+                    ("generator", "power"),
+                    ("power",),
+                ),
+                ("reactive", "apparent", "power factor", "power_factor", "cosphi"),
+            ),
+            (
+                "rotor_speed",
+                (("rotor", "speed"), ("rotation", "speed"), ("rotor", "rpm")),
+                (),
+            ),
+            (
+                "generator_speed",
+                (("generator", "speed"), ("generator", "rpm")),
+                (),
+            ),
+        )
+
+        for role, token_groups, excluded in role_specs:
+            idx = cls._first_matching_index(
+                channel_names,
+                token_groups,
+                excluded_tokens=excluded,
+                used=used,
+            )
+            if idx is None:
+                continue
+            selected.append(int(idx))
+            roles[role] = int(idx)
+            used.add(int(idx))
+            if len(selected) >= min(max_drivers, matrix.shape[1]):
+                break
+
         variances = np.nanvar(matrix, axis=0)
+        lowered = [str(name).lower() for name in channel_names]
+        unsafe_fallback_tokens = ("reactive", "apparent", "power factor", "power_factor", "cosphi")
+
+        # Fill missing roles using informative channels, but do not silently
+        # re-introduce known non-load electrical quantities as regime drivers.
+        fallback_rank = 0
         for idx in np.argsort(variances)[::-1]:
             idx = int(idx)
-            if idx not in preferred and np.isfinite(variances[idx]) and variances[idx] > 1e-12:
-                preferred.append(idx)
-            if len(preferred) >= min(4, matrix.shape[1]):
+            if idx in used:
+                continue
+            if any(token in lowered[idx] for token in unsafe_fallback_tokens):
+                continue
+            if not np.isfinite(variances[idx]) or variances[idx] <= 1e-12:
+                continue
+            selected.append(idx)
+            roles[f"variance_fallback_{fallback_rank}"] = idx
+            fallback_rank += 1
+            used.add(idx)
+            if len(selected) >= min(max_drivers, matrix.shape[1]):
                 break
-        return preferred[:4]
+
+        # Degenerate small fixtures may contain only excluded/constant channels.
+        # Preserve a usable model rather than failing, while keeping the fallback
+        # explicit in diagnostics.
+        if len(selected) < min(max_drivers, matrix.shape[1]):
+            for idx in np.argsort(variances)[::-1]:
+                idx = int(idx)
+                if idx in used:
+                    continue
+                if not np.isfinite(variances[idx]) or variances[idx] <= 1e-12:
+                    continue
+                selected.append(idx)
+                roles[f"last_resort_variance_{fallback_rank}"] = idx
+                fallback_rank += 1
+                used.add(idx)
+                if len(selected) >= min(max_drivers, matrix.shape[1]):
+                    break
+
+        if not selected:
+            raise ValueError("unable to resolve any non-constant operating-regime driver")
+        return selected[:max_drivers], roles
+
+    @classmethod
+    def _driver_indices(cls, channel_names: list[str], matrix: np.ndarray) -> list[int]:
+        drivers, _ = cls._driver_selection(channel_names, matrix)
+        return drivers
 
     @staticmethod
     def _target_indices(channel_names: list[str], matrix: np.ndarray, max_targets: int = 8) -> list[int]:
@@ -122,6 +237,49 @@ class WindScadaDiagnosticPipeline:
             cur[cur_missing] = np.take(med, np.where(cur_missing)[1])
         return ref, cur
 
+    @staticmethod
+    def _regime_assignment_diagnostics(
+        z_ref: np.ndarray,
+        reference_regimes: np.ndarray,
+        z_pred: np.ndarray,
+        unique_regimes: list[int],
+        centers: list[np.ndarray],
+        distances: np.ndarray,
+    ) -> dict[str, Any]:
+        """Quantify how far deployment samples lie from healthy regime support."""
+        label_to_position = {int(label): pos for pos, label in enumerate(unique_regimes)}
+        reference_assigned_distance = np.asarray(
+            [
+                np.linalg.norm(z_ref[i] - centers[label_to_position[int(reference_regimes[i])]])
+                for i in range(len(z_ref))
+            ],
+            dtype=float,
+        )
+        finite_ref = reference_assigned_distance[np.isfinite(reference_assigned_distance)]
+        distance_threshold = float(np.nanpercentile(finite_ref, 99.0)) if finite_ref.size else float("inf")
+
+        if distances.size:
+            nearest = np.min(distances, axis=1)
+            if distances.shape[1] > 1:
+                ordered = np.sort(distances, axis=1)
+                second = ordered[:, 1]
+                margin = second - ordered[:, 0]
+            else:
+                margin = np.full(len(z_pred), np.inf)
+        else:
+            nearest = np.zeros(len(z_pred), dtype=float)
+            margin = np.full(len(z_pred), np.inf)
+
+        ood = nearest > distance_threshold
+        return {
+            "reference_distance_threshold_p99": distance_threshold,
+            "prediction_nearest_distance": nearest,
+            "prediction_assignment_margin": margin,
+            "out_of_distribution_mask": ood,
+            "out_of_distribution_fraction": float(np.mean(ood)) if len(ood) else 0.0,
+            "regime_labels": list(unique_regimes),
+        }
+
     def run(
         self,
         train_matrix,
@@ -157,7 +315,7 @@ class WindScadaDiagnosticPipeline:
             raise ValueError("need at least 60 healthy SCADA samples for normal-behavior modeling")
 
         healthy, pred_clean = self._fill_reference_statistics(healthy, pred)
-        drivers = self._driver_indices(names, healthy)
+        drivers, driver_roles = self._driver_selection(names, healthy)
 
         tool_trace.append("operating_regime_detection")
         reference_regimes = detect_wind_operating_regimes(
@@ -179,6 +337,14 @@ class WindScadaDiagnosticPipeline:
         z_pred = (pred_clean[:, drivers] - driver_med) / driver_scale
         distances = np.stack([np.linalg.norm(z_pred - center, axis=1) for center in centers], axis=1)
         prediction_regimes = np.asarray([unique_regimes[i] for i in np.argmin(distances, axis=1)])
+        regime_diagnostics = self._regime_assignment_diagnostics(
+            z_ref,
+            reference_regimes,
+            z_pred,
+            unique_regimes,
+            centers,
+            distances,
+        )
 
         targets = self._target_indices(names, healthy) if target_indices is None else [int(i) for i in target_indices]
         predictors = self._predictor_indices(healthy, drivers, targets)
@@ -243,6 +409,11 @@ class WindScadaDiagnosticPipeline:
         physics_boost = min(0.15, 0.03 * len(physics["verification_findings"]))
         confidence = float(np.clip(np.nanpercentile(score, 95) / 2.0 + physics_boost, 0.0, 1.0))
 
+        driver_role_details = {
+            role: {"index": int(idx), "channel": names[int(idx)]}
+            for role, idx in driver_roles.items()
+        }
+
         return WindScadaDiagnosticResult(
             anomaly_detected=bool(np.any(fused_alarm)),
             affected_channels=affected,
@@ -254,6 +425,9 @@ class WindScadaDiagnosticPipeline:
                 "quality_train": quality_train,
                 "quality_prediction": quality_prediction,
                 "driver_indices": drivers,
+                "driver_channel_names": [names[int(i)] for i in drivers],
+                "driver_roles": driver_role_details,
+                "regime_assignment": regime_diagnostics,
                 "target_indices": targets,
                 "predictor_indices": predictors,
                 "reference_regimes": reference_regimes,
