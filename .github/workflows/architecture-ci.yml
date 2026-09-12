@@ -8,10 +8,13 @@ on:
       - "src/tsdiag/contracts.py"
       - "src/tsdiag/models.py"
       - "src/tsdiag/domains/planner.py"
+      - "src/tsdiag/domains/process.py"
+      - "src/tsdiag/domains/process_engine.py"
       - "src/tsdiag/domains/runtime_adapters.py"
       - "src/tsdiag/domains/__init__.py"
       - "src/tsdiag/__init__.py"
       - "tests/test_core_runtime.py"
+      - "tests/test_process_engine.py"
       - "tests/test_runtime_adapters_verification.py"
       - "tests/test_domain_packs.py"
       - "tests/test_diagnostic_contract.py"
@@ -24,10 +27,13 @@ on:
       - "src/tsdiag/contracts.py"
       - "src/tsdiag/models.py"
       - "src/tsdiag/domains/planner.py"
+      - "src/tsdiag/domains/process.py"
+      - "src/tsdiag/domains/process_engine.py"
       - "src/tsdiag/domains/runtime_adapters.py"
       - "src/tsdiag/domains/__init__.py"
       - "src/tsdiag/__init__.py"
       - "tests/test_core_runtime.py"
+      - "tests/test_process_engine.py"
       - "tests/test_runtime_adapters_verification.py"
       - "tests/test_domain_packs.py"
       - "tests/test_diagnostic_contract.py"
@@ -47,6 +53,7 @@ jobs:
         run: >-
           pytest -q
           tests/test_core_runtime.py
+          tests/test_process_engine.py
           tests/test_runtime_adapters_verification.py
           tests/test_domain_packs.py
           tests/test_diagnostic_contract.py
