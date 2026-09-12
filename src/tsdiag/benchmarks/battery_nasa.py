@@ -27,8 +27,9 @@ class BatteryPrognosisCase:
     observation_cycle: int
     observed_capacity_ah: float
     observed_soh: float
-    true_eol_cycle: int
-    true_rul_cycles: int
+    eol_observed: bool
+    true_eol_cycle: int | None
+    true_rul_cycles: int | None
     predicted_rul_cycles: float | None
     predicted_eol_cycle: float | None
     absolute_error_cycles: float | None
@@ -43,39 +44,79 @@ class BatteryPrognosisCase:
 def _summary(cases: list[BatteryPrognosisCase]) -> dict:
     if not cases:
         return {"case_count": 0}
-    covered = [row for row in cases if not row.abstained and row.predicted_rul_cycles is not None]
+
+    evaluable = [row for row in cases if row.eol_observed and row.true_rul_cycles is not None]
+    covered = [
+        row
+        for row in evaluable
+        if not row.abstained and row.predicted_rul_cycles is not None
+    ]
+    censored = [row for row in cases if not row.eol_observed]
+
     errors = np.asarray([row.absolute_error_cycles for row in covered], dtype=float)
-    signed = np.asarray([row.predicted_rul_cycles - row.true_rul_cycles for row in covered], dtype=float)
+    signed = np.asarray(
+        [row.predicted_rul_cycles - row.true_rul_cycles for row in covered],
+        dtype=float,
+    )
     rel = np.asarray([row.relative_error for row in covered], dtype=float)
+
     by_cutpoint: dict[str, dict] = {}
     for cutpoint in sorted({row.observation_cycle for row in cases}):
         subset = [row for row in cases if row.observation_cycle == cutpoint]
-        subset_cov = [row for row in subset if not row.abstained and row.predicted_rul_cycles is not None]
+        subset_eval = [row for row in subset if row.eol_observed]
+        subset_cov = [
+            row
+            for row in subset_eval
+            if not row.abstained and row.predicted_rul_cycles is not None
+        ]
         by_cutpoint[str(cutpoint)] = {
             "case_count": len(subset),
-            "coverage": float(len(subset_cov) / len(subset)),
+            "evaluable_case_count": len(subset_eval),
+            "censored_case_count": len(subset) - len(subset_eval),
+            "coverage": (
+                float(len(subset_cov) / len(subset_eval)) if subset_eval else None
+            ),
             "mae_cycles": (
-                float(np.mean([row.absolute_error_cycles for row in subset_cov])) if subset_cov else None
+                float(np.mean([row.absolute_error_cycles for row in subset_cov]))
+                if subset_cov
+                else None
             ),
         }
 
     by_battery: dict[str, dict] = {}
     for battery_id in sorted({row.battery_id for row in cases}):
         subset = [row for row in cases if row.battery_id == battery_id]
-        subset_cov = [row for row in subset if not row.abstained and row.predicted_rul_cycles is not None]
+        subset_eval = [row for row in subset if row.eol_observed]
+        subset_cov = [
+            row
+            for row in subset_eval
+            if not row.abstained and row.predicted_rul_cycles is not None
+        ]
         by_battery[battery_id] = {
             "case_count": len(subset),
-            "coverage": float(len(subset_cov) / len(subset)),
+            "eol_observed": bool(subset_eval),
+            "evaluable_case_count": len(subset_eval),
+            "coverage": (
+                float(len(subset_cov) / len(subset_eval)) if subset_eval else None
+            ),
             "mae_cycles": (
-                float(np.mean([row.absolute_error_cycles for row in subset_cov])) if subset_cov else None
+                float(np.mean([row.absolute_error_cycles for row in subset_cov]))
+                if subset_cov
+                else None
             ),
         }
 
+    prediction_count = sum(
+        1 for row in cases if not row.abstained and row.predicted_rul_cycles is not None
+    )
     return {
         "case_count": len(cases),
+        "evaluable_case_count": len(evaluable),
+        "censored_case_count": len(censored),
         "covered_case_count": len(covered),
-        "coverage": float(len(covered) / len(cases)),
-        "abstention_rate": float(1.0 - len(covered) / len(cases)),
+        "prediction_count_all_cases": int(prediction_count),
+        "coverage": float(len(covered) / len(evaluable)) if evaluable else None,
+        "abstention_rate": float(1.0 - len(covered) / len(evaluable)) if evaluable else None,
         "mae_cycles": float(np.mean(errors)) if errors.size else None,
         "rmse_cycles": float(np.sqrt(np.mean(signed**2))) if signed.size else None,
         "mean_relative_error": float(np.mean(rel)) if rel.size else None,
@@ -96,6 +137,7 @@ def run_nasa_battery_benchmark(
     root = Path(data_dir)
     cases: list[BatteryPrognosisCase] = []
     failures: list[dict] = []
+    censored_cells: list[dict] = []
     cycle_features: dict[str, list[dict]] = {}
 
     for battery_id in battery_ids:
@@ -103,20 +145,27 @@ def run_nasa_battery_benchmark(
             cycles = load_nasa_battery_discharge_cycles(root / f"{battery_id}.mat", battery_id)
             eol_cycle = first_eol_cycle(cycles, eol_capacity_ah=NASA_EOL_CAPACITY_AH)
             cycle_features[battery_id] = [
-                {"cycle_index": cycle.cycle_index, **discharge_curve_features(cycle)} for cycle in cycles
+                {"cycle_index": cycle.cycle_index, **discharge_curve_features(cycle)}
+                for cycle in cycles
             ]
             if eol_cycle is None:
-                failures.append({
+                censored_cells.append({
                     "battery_id": battery_id,
-                    "error": "No observed discharge cycle reaches the fixed 1.4 Ah EOL threshold.",
+                    "last_observed_cycle": int(cycles[-1].cycle_index),
+                    "last_observed_capacity_ah": float(cycles[-1].capacity_ah),
+                    "censoring_reason": (
+                        "Dataset ends before the fixed 1.4 Ah EOL threshold is observed."
+                    ),
                 })
-                continue
 
             capacities = np.asarray([cycle.capacity_ah for cycle in cycles], dtype=float)
             indices = np.asarray([cycle.cycle_index for cycle in cycles], dtype=int)
             for cutpoint in cutpoints:
-                if cutpoint >= eol_cycle or cutpoint > len(cycles):
+                if cutpoint > len(cycles):
                     continue
+                if eol_cycle is not None and cutpoint >= eol_cycle:
+                    continue
+
                 mask = indices <= int(cutpoint)
                 started = perf_counter()
                 result = BatteryPrognosticPipeline().run(
@@ -125,20 +174,23 @@ def run_nasa_battery_benchmark(
                     battery_id=battery_id,
                 )
                 runtime = perf_counter() - started
-                true_rul = int(eol_cycle - cutpoint)
+
+                true_rul = None if eol_cycle is None else int(eol_cycle - cutpoint)
                 predicted_rul = (
                     None
                     if result.prognosis is None or result.prognosis.remaining_useful_life is None
                     else float(result.prognosis.remaining_useful_life)
                 )
-                predicted_eol = (
-                    None if predicted_rul is None else float(cutpoint + predicted_rul)
-                )
+                predicted_eol = None if predicted_rul is None else float(cutpoint + predicted_rul)
                 absolute_error = (
-                    None if predicted_rul is None else float(abs(predicted_rul - true_rul))
+                    None
+                    if predicted_rul is None or true_rul is None
+                    else float(abs(predicted_rul - true_rul))
                 )
                 relative_error = (
-                    None if absolute_error is None else float(absolute_error / max(true_rul, 1))
+                    None
+                    if absolute_error is None or true_rul is None
+                    else float(absolute_error / max(true_rul, 1))
                 )
                 uncertainty_cycles = None
                 if result.prognosis is not None:
@@ -151,7 +203,8 @@ def run_nasa_battery_benchmark(
                     observation_cycle=int(cutpoint),
                     observed_capacity_ah=float(capacities[cutpoint - 1]),
                     observed_soh=float(capacities[cutpoint - 1] / 2.0),
-                    true_eol_cycle=int(eol_cycle),
+                    eol_observed=eol_cycle is not None,
+                    true_eol_cycle=(None if eol_cycle is None else int(eol_cycle)),
                     true_rul_cycles=true_rul,
                     predicted_rul_cycles=predicted_rul,
                     predicted_eol_cycle=predicted_eol,
@@ -173,12 +226,21 @@ def run_nasa_battery_benchmark(
             "nominal_capacity_ah": 2.0,
             "eol_capacity_ah": NASA_EOL_CAPACITY_AH,
             "cutpoints": list(cutpoints),
-            "information_rule": "Each prediction uses only discharge-capacity history up to the observation cutpoint.",
-            "threshold_tuning": "No benchmark labels or future capacity values are used to tune predictor thresholds.",
+            "information_rule": (
+                "Each prediction uses only discharge-capacity history up to the observation cutpoint."
+            ),
+            "threshold_tuning": (
+                "No benchmark labels or future capacity values are used to tune predictor thresholds."
+            ),
             "primary_task": "remaining discharge cycles to first observed capacity <= 1.4 Ah",
+            "censoring_rule": (
+                "Cells whose recorded data end above 1.4 Ah are retained as right-censored; "
+                "their predictions are recorded but excluded from exact RUL error metrics."
+            ),
         },
         "summary": _summary(cases),
         "cases": [asdict(row) for row in cases],
+        "censored_cells": censored_cells,
         "cycle_features": cycle_features,
         "failures": failures,
     }
