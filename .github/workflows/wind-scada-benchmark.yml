@@ -56,12 +56,33 @@ jobs:
           pip install -e ".[dev]"
       - name: Check disk
         run: df -h
-      - name: Download official CARE v6 archive
+
+      - name: Restore CARE v6 dataset cache
+        id: care-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: CARE_To_Compare.zip
+          key: care-v6-zenodo-15846963-md5-2547b58c21ac8c242d13232860cf500c
+
+      - name: Download official CARE v6 archive on cache miss
+        if: steps.care-cache.outputs.cache-hit != 'true'
         run: |
           curl --fail --location --retry 4 --retry-delay 10 \
             --output CARE_To_Compare.zip \
             "https://zenodo.org/records/15846963/files/CARE_To_Compare.zip?download=1"
+
+      - name: Validate CARE v6 archive
+        run: |
+          echo "2547b58c21ac8c242d13232860cf500c  CARE_To_Compare.zip" | md5sum --check --strict
           ls -lh CARE_To_Compare.zip
+
+      - name: Save CARE v6 dataset cache
+        if: steps.care-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: CARE_To_Compare.zip
+          key: ${{ steps.care-cache.outputs.cache-primary-key }}
+
       - name: Run complete 95-event CARE v6 benchmark
         run: |
           python scripts/run_wind_scada_benchmark.py \
