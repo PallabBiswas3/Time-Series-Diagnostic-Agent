@@ -1,4 +1,5 @@
 from .bearing import BEARING_PACK
+from .bearing_runner import BearingDiagnosticPipeline
 from .process import PROCESS_PACK
 from .process_runner import ProcessDiagnosticPipeline, ProcessDiagnosticResult
 from .wind_scada import WIND_SCADA_PACK
@@ -26,8 +27,14 @@ def get_domain_pack(key: str):
         raise KeyError(f"Unknown domain pack {key!r}. Available: {sorted(DOMAIN_PACKS)}") from exc
 
 
+# Import adapters after DOMAIN_PACKS/get_domain_pack are defined to avoid circular
+# imports through the shared core runtime.
+from .runtime_adapters import run_bearing_request, run_process_request
+
+
 __all__ = [
     "BEARING_PACK",
+    "BearingDiagnosticPipeline",
     "PROCESS_PACK",
     "ProcessDiagnosticPipeline",
     "ProcessDiagnosticResult",
@@ -37,4 +44,6 @@ __all__ = [
     "TRANSFORMER_PACK",
     "DOMAIN_PACKS",
     "get_domain_pack",
+    "run_bearing_request",
+    "run_process_request",
 ]
