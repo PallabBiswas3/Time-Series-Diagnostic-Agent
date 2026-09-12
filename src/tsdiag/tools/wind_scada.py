@@ -109,6 +109,8 @@ class WindNormalBehaviorState:
     global_models: dict[int, HistGradientBoostingRegressor]
     residual_center: np.ndarray
     residual_scale: np.ndarray
+    residual_center_by_regime: dict[int, np.ndarray]
+    residual_scale_by_regime: dict[int, np.ndarray]
     regime_ids: list[int]
 
 
@@ -133,6 +135,20 @@ def _subsample_indices(idx: np.ndarray, maximum: int) -> np.ndarray:
     return idx[positions]
 
 
+def _robust_center_scale(values: np.ndarray, *, minimum_samples: int = 8) -> tuple[float, float]:
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size < int(minimum_samples):
+        return float("nan"), float("nan")
+    center = float(np.nanmedian(values))
+    scale = float(np.nanmedian(np.abs(values - center)) * 1.4826)
+    if not np.isfinite(scale) or scale < 1e-12:
+        scale = float(np.nanstd(values))
+    if not np.isfinite(scale) or scale < 1e-12:
+        return center, float("nan")
+    return center, scale
+
+
 def _oos_residual_calibration(
     ref: np.ndarray,
     regimes: np.ndarray,
@@ -142,15 +158,14 @@ def _oos_residual_calibration(
     *,
     max_train_samples_per_regime: int,
     random_state: int,
-) -> tuple[float, float]:
-    """Estimate healthy residual center and scale on out-of-sample rows.
+) -> tuple[float, float, dict[int, float], dict[int, float]]:
+    """Estimate global and regime-specific healthy residual calibration.
 
-    Tree normal-behavior models need both a deployment residual scale and a
-    healthy residual center. CUSUM assumes its input is centered around zero;
-    dividing an ordinary model bias by a robust scale without subtracting that
-    bias turns healthy prediction error into persistent drift. A deterministic
-    stratified 20% holdout estimates both values, after which final deployment
-    models are still fit on all healthy rows.
+    A deterministic stratified 20% holdout estimates out-of-sample prediction
+    residuals. The global center/scale remain as robust fallbacks, while each
+    sufficiently represented operating regime receives its own center and scale.
+    This prevents normal regime-specific model bias or heteroscedasticity from
+    being interpreted as a persistent fault by residual thresholding/CUSUM.
     """
     fit_mask = np.zeros(ref.shape[0], dtype=bool)
     cal_mask = np.zeros(ref.shape[0], dtype=bool)
@@ -164,7 +179,7 @@ def _oos_residual_calibration(
         fit_mask[fit_idx] = True
 
     if np.sum(cal_mask) < 10 or np.sum(fit_mask) < 20:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), {}, {}
 
     global_fit = np.flatnonzero(fit_mask)
     global_model = _new_nbm(random_state)
@@ -182,15 +197,21 @@ def _oos_residual_calibration(
             model = global_model
         expected[cal_idx] = model.predict(ref[cal_idx][:, feature_cols])
 
-    residual = ref[cal_mask, target] - expected[cal_mask]
-    residual = residual[np.isfinite(residual)]
-    if residual.size < 10:
-        return float("nan"), float("nan")
-    center = float(np.nanmedian(residual))
-    scale = float(np.nanmedian(np.abs(residual - center)) * 1.4826)
-    if not np.isfinite(scale) or scale < 1e-12:
-        scale = float(np.nanstd(residual))
-    return center, scale
+    residual = ref[:, target] - expected
+    center, scale = _robust_center_scale(residual[cal_mask], minimum_samples=10)
+
+    by_regime_center: dict[int, float] = {}
+    by_regime_scale: dict[int, float] = {}
+    for regime in np.unique(regimes[cal_mask]):
+        regime = int(regime)
+        regime_residual = residual[cal_mask & (regimes == regime)]
+        regime_center, regime_scale = _robust_center_scale(regime_residual, minimum_samples=8)
+        if np.isfinite(regime_center):
+            by_regime_center[regime] = float(regime_center)
+        if np.isfinite(regime_scale) and regime_scale >= 1e-12:
+            by_regime_scale[regime] = float(regime_scale)
+
+    return center, scale, by_regime_center, by_regime_scale
 
 
 def fit_wind_normal_behavior_model(
@@ -212,11 +233,14 @@ def fit_wind_normal_behavior_model(
     if not targets or not predictors:
         raise ValueError("normal behavior model requires targets and predictors")
 
+    regime_ids = [int(v) for v in np.unique(regimes)]
     models: dict[tuple[int, int], HistGradientBoostingRegressor] = {}
     global_models: dict[int, HistGradientBoostingRegressor] = {}
     expected_ref = np.full((ref.shape[0], len(targets)), np.nan)
     centers = np.full(len(targets), np.nan)
     scales = np.full(len(targets), np.nan)
+    regime_centers = {regime: np.full(len(targets), np.nan) for regime in regime_ids}
+    regime_scales = {regime: np.full(len(targets), np.nan) for regime in regime_ids}
 
     for target_pos, target in enumerate(targets):
         feature_cols = [j for j in predictors if j != target]
@@ -226,7 +250,7 @@ def fit_wind_normal_behavior_model(
         if np.sum(valid) < 10:
             raise ValueError(f"insufficient finite reference samples for target {target}")
 
-        centers[target_pos], scales[target_pos] = _oos_residual_calibration(
+        center, scale, center_by_regime, scale_by_regime = _oos_residual_calibration(
             ref,
             regimes,
             target,
@@ -235,26 +259,34 @@ def fit_wind_normal_behavior_model(
             max_train_samples_per_regime=max_train_samples_per_regime,
             random_state=random_state,
         )
+        centers[target_pos] = center
+        scales[target_pos] = scale
+        for regime, value in center_by_regime.items():
+            if regime in regime_centers:
+                regime_centers[regime][target_pos] = value
+        for regime, value in scale_by_regime.items():
+            if regime in regime_scales:
+                regime_scales[regime][target_pos] = value
 
         global_model = _new_nbm(random_state)
         global_model.fit(ref[valid][:, feature_cols], ref[valid, target])
         global_models[target] = global_model
 
-        for regime in np.unique(regimes):
+        for regime in regime_ids:
             idx = np.flatnonzero(valid & (regimes == regime))
             if idx.size < 30:
                 continue
             idx = _subsample_indices(idx, max_train_samples_per_regime)
             model = _new_nbm(random_state)
             model.fit(ref[idx][:, feature_cols], ref[idx, target])
-            models[(int(regime), target)] = model
+            models[(regime, target)] = model
 
-        for regime in np.unique(regimes):
+        for regime in regime_ids:
             mask = regimes == regime
             valid_mask = mask & _valid_rows(ref[:, feature_cols])
             if not np.any(valid_mask):
                 continue
-            model = models.get((int(regime), target), global_model)
+            model = models.get((regime, target), global_model)
             expected_ref[valid_mask, target_pos] = model.predict(ref[valid_mask][:, feature_cols])
 
     in_sample_residuals = ref[:, targets] - expected_ref
@@ -270,6 +302,35 @@ def fit_wind_normal_behavior_model(
     residual_scale = np.where(np.isfinite(scales) & (scales >= 1e-12), scales, fallback_scale)
     residual_scale = np.where(np.isfinite(residual_scale) & (residual_scale >= 1e-12), residual_scale, 1.0)
 
+    for regime in regime_ids:
+        regime_mask = regimes == regime
+        regime_residuals = in_sample_residuals[regime_mask]
+        in_center = np.nanmedian(regime_residuals, axis=0) if np.any(regime_mask) else residual_center
+        in_scale = (
+            np.nanmedian(np.abs(regime_residuals - in_center), axis=0) * 1.4826
+            if np.any(regime_mask)
+            else residual_scale
+        )
+        in_std = np.nanstd(regime_residuals, axis=0) if np.any(regime_mask) else residual_scale
+        in_scale = np.where(np.isfinite(in_scale) & (in_scale >= 1e-12), in_scale, in_std)
+
+        regime_centers[regime] = np.where(
+            np.isfinite(regime_centers[regime]), regime_centers[regime], in_center
+        )
+        regime_centers[regime] = np.where(
+            np.isfinite(regime_centers[regime]), regime_centers[regime], residual_center
+        )
+        regime_scales[regime] = np.where(
+            np.isfinite(regime_scales[regime]) & (regime_scales[regime] >= 1e-12),
+            regime_scales[regime],
+            in_scale,
+        )
+        regime_scales[regime] = np.where(
+            np.isfinite(regime_scales[regime]) & (regime_scales[regime] >= 1e-12),
+            regime_scales[regime],
+            residual_scale,
+        )
+
     return WindNormalBehaviorState(
         target_indices=targets,
         predictor_indices=predictors,
@@ -277,7 +338,9 @@ def fit_wind_normal_behavior_model(
         global_models=global_models,
         residual_center=np.asarray(residual_center, dtype=float),
         residual_scale=np.asarray(residual_scale, dtype=float),
-        regime_ids=[int(v) for v in np.unique(regimes)],
+        residual_center_by_regime={k: np.asarray(v, dtype=float) for k, v in regime_centers.items()},
+        residual_scale_by_regime={k: np.asarray(v, dtype=float) for k, v in regime_scales.items()},
+        regime_ids=regime_ids,
     )
 
 
@@ -302,15 +365,35 @@ def predict_wind_normal_behavior(signal_matrix, regime_ids, state: WindNormalBeh
 
     observed = x[:, state.target_indices]
     residuals = observed - expected
-    normalized = (residuals - state.residual_center) / state.residual_scale
-    uncertainty = np.tile(state.residual_scale, (x.shape[0], 1))
+
+    center_used = np.tile(state.residual_center, (x.shape[0], 1))
+    scale_used = np.tile(state.residual_scale, (x.shape[0], 1))
+    for regime in np.unique(regimes):
+        regime = int(regime)
+        mask = regimes == regime
+        if regime in state.residual_center_by_regime:
+            center_used[mask] = state.residual_center_by_regime[regime]
+        if regime in state.residual_scale_by_regime:
+            scale_used[mask] = state.residual_scale_by_regime[regime]
+    scale_used = np.where(np.isfinite(scale_used) & (scale_used >= 1e-12), scale_used, 1.0)
+
+    normalized = (residuals - center_used) / scale_used
     return {
         "expected_signal": expected,
         "observed_signal": observed,
         "residuals": residuals,
         "residual_center": np.asarray(state.residual_center, dtype=float),
+        "residual_scale": np.asarray(state.residual_scale, dtype=float),
+        "residual_center_by_regime": {
+            int(k): np.asarray(v, dtype=float) for k, v in state.residual_center_by_regime.items()
+        },
+        "residual_scale_by_regime": {
+            int(k): np.asarray(v, dtype=float) for k, v in state.residual_scale_by_regime.items()
+        },
+        "residual_center_used": center_used,
+        "residual_scale_used": scale_used,
         "normalized_residuals": normalized,
-        "model_uncertainty": uncertainty,
+        "model_uncertainty": scale_used,
         "target_indices": list(state.target_indices),
     }
 
@@ -341,6 +424,9 @@ def normal_behavior_model(
         "model_uncertainty": prediction["model_uncertainty"],
         "normal_behavior_state": state,
         "residual_center": prediction["residual_center"],
+        "residual_scale": prediction["residual_scale"],
+        "residual_center_by_regime": prediction["residual_center_by_regime"],
+        "residual_scale_by_regime": prediction["residual_scale_by_regime"],
         "normalized_residuals": prediction["normalized_residuals"],
     }
 
