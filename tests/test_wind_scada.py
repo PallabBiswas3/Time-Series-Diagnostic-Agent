@@ -150,6 +150,32 @@ def test_out_of_sample_residual_scale_stays_sane_on_healthy_holdout():
     assert np.mean(z >= 3.5) < 0.10
 
 
+def test_oos_residual_calibration_recenters_systematic_healthy_model_bias():
+    rng = np.random.default_rng(23)
+    n_ref = 700
+    wind = rng.uniform(3.0, 14.0, n_ref)
+    power = 18.0 * wind**2 + rng.normal(0.0, 20.0, n_ref)
+    # Add a nonlinear/noisy target so finite-tree prediction has a measurable
+    # out-of-sample residual offset rather than assuming exact zero centering.
+    temp = 24.0 + 0.01 * power + 0.5 * np.sin(1.7 * wind) + rng.normal(0.25, 0.8, n_ref)
+    ref = np.column_stack([wind, power, temp])
+    regimes = (wind >= 8.0).astype(int)
+
+    state = fit_wind_normal_behavior_model(
+        ref,
+        regimes,
+        target_indices=[2],
+        predictor_indices=[0, 1, 2],
+    )
+
+    prediction = predict_wind_normal_behavior(ref, regimes, state)
+    z = prediction["normalized_residuals"][:, 0]
+    # Calibration should carry and subtract the healthy residual center rather
+    # than letting a non-zero model bias feed a sequential drift detector.
+    assert np.isfinite(state.residual_center[0])
+    assert abs(np.nanmedian(z)) < 0.5
+
+
 def test_operating_regime_detection_returns_requested_number():
     rng = np.random.default_rng(8)
     x = np.r_[
