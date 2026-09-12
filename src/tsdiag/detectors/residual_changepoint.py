@@ -50,7 +50,9 @@ def residual_cusum(
     controls only the aggregate alarm stream, preventing the family-wise false
     alarm inflation caused by taking a simple union over many monitored channels.
     Corroboration is evaluated over each channel's short hold window rather than
-    requiring multiple channels to cross on the exact same sample.
+    requiring multiple channels to cross on the exact same sample. Hold windows
+    are truncated at operating-boundary resets so evidence cannot leak across
+    regimes.
     """
     cfg = config or ResidualCUSUMConfig()
     x = _as_2d(normalized_residuals)
@@ -99,25 +101,44 @@ def residual_cusum(
 
     hold_samples = max(1, int(cfg.hold_samples))
     channel_hold_mask = np.zeros((n, d), dtype=bool)
+    channel_hold_score = np.zeros((n, d), dtype=float)
+    strength = np.maximum(pos_history, neg_history)
+
     for channel in range(d):
         for idx in np.flatnonzero(point_mask[:, channel]):
-            channel_hold_mask[idx:min(n, idx + hold_samples), channel] = True
+            stop = min(n, idx + hold_samples)
+            # A pre-transition crossing must not corroborate a crossing from the
+            # next operating regime. Truncate its evidence window at the first
+            # reset strictly after the crossing.
+            future_resets = np.flatnonzero(resets[idx + 1:stop])
+            if future_resets.size:
+                stop = idx + 1 + int(future_resets[0])
+            if stop <= idx:
+                continue
+            channel_hold_mask[idx:stop, channel] = True
+            trigger_strength = float(strength[idx, channel])
+            channel_hold_score[idx:stop, channel] = np.maximum(
+                channel_hold_score[idx:stop, channel], trigger_strength
+            )
 
     channel_support_count = np.sum(channel_hold_mask, axis=1).astype(int)
     channel_support_fraction = channel_support_count / max(d, 1)
-    aggregate_points = channel_support_count >= min_support
+    aggregate_active = channel_support_count >= min_support
 
-    hold = aggregate_points.copy()
+    # A change point is the onset of a corroborated episode, not every sample
+    # inside the episode's evidence window.
+    aggregate_onsets = aggregate_active.copy()
+    if n > 1:
+        aggregate_onsets[1:] &= ~aggregate_active[:-1]
 
-    strength = np.maximum(pos_history, neg_history)
     channel_max_score = np.nanmax(strength, axis=1) if d else np.zeros(n)
     if d:
-        sorted_strength = np.sort(strength, axis=1)
-        aggregate_score = sorted_strength[:, -min_support]
+        sorted_held_scores = np.sort(channel_hold_score, axis=1)
+        aggregate_score = sorted_held_scores[:, -min_support]
     else:
         aggregate_score = np.zeros(n)
 
-    change_points = np.flatnonzero(aggregate_points).astype(int).tolist()
+    change_points = np.flatnonzero(aggregate_onsets).astype(int).tolist()
     channel_change_points = {
         int(j): np.flatnonzero(point_mask[:, j]).astype(int).tolist()
         for j in range(d)
@@ -144,12 +165,13 @@ def residual_cusum(
         "change_point_timestamps": change_point_timestamps,
         "channel_change_points": channel_change_points,
         "channel_change_point_timestamps": channel_change_point_timestamps,
-        "change_point_mask": aggregate_points,
+        "change_point_mask": aggregate_onsets,
+        "aggregate_support_mask": aggregate_active,
         "channel_change_point_mask": point_mask,
         "channel_hold_mask": channel_hold_mask,
         "channel_support_count": channel_support_count,
         "channel_support_fraction": channel_support_fraction,
-        "alarm_mask": hold,
+        "alarm_mask": aggregate_active,
         "cusum_scores": aggregate_score,
         "channel_max_cusum_scores": channel_max_score,
         "positive_cusum": pos_history,
