@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from ..core import RunRequest
+from ..core.context import RunRequest
 from ..models import (
     DetectionResult,
     DiagnosticHypothesis,
@@ -22,12 +22,7 @@ def run_bearing_request(
     *,
     pipeline: BearingDiagnosticPipeline | None = None,
 ) -> DiagnosticResult:
-    """Bridge a canonical RunRequest to the existing bearing pipeline.
-
-    This preserves the current bearing method while giving callers one common
-    request shape. Tool-by-tool migration to ExecutionEngine can happen later
-    without changing callers or benchmark protocol.
-    """
+    """Bridge a canonical RunRequest to the existing bearing pipeline."""
 
     request.validate()
     if request.domain != "bearing":
