@@ -2,6 +2,7 @@ from .bearing import BEARING_PACK
 from .process import PROCESS_PACK
 from .process_runner import ProcessDiagnosticPipeline, ProcessDiagnosticResult
 from .wind_scada import WIND_SCADA_PACK
+from .wind_scada_runner import WindScadaDiagnosticPipeline, WindScadaDiagnosticResult
 from .battery import BATTERY_PACK
 from .turbofan import TURBOFAN_PACK
 from .transformer import TRANSFORMER_PACK
@@ -32,6 +33,8 @@ __all__ = [
     "ProcessDiagnosticPipeline",
     "ProcessDiagnosticResult",
     "WIND_SCADA_PACK",
+    "WindScadaDiagnosticPipeline",
+    "WindScadaDiagnosticResult",
     "BATTERY_PACK",
     "TURBOFAN_PACK",
     "TRANSFORMER_PACK",

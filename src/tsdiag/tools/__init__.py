@@ -49,6 +49,15 @@ from .root_rank_screening import (
     cross_validate_root_ranker_screened as cross_validate_root_ranker,
     screen_root_candidates,
 )
+from .wind_scada import (
+    WindNormalBehaviorState,
+    detect_wind_operating_regimes,
+    fit_wind_normal_behavior_model,
+    normal_behavior_model,
+    predict_wind_normal_behavior,
+    scada_quality_check,
+    wind_residual_anomaly_detection,
+)
 from .change import change_point_detection, cross_sensor_relationships, rolling_statistics
 from .wavelet import (
     correlation_sensor_weighting,
@@ -73,8 +82,11 @@ __all__ = [
     "FEATURE_NAMES", "RootRankerConfig", "build_root_feature_rows", "catalog_feature_scores",
     "cross_validate_root_ranker", "DEFAULT_ROOT_CANDIDATE_LIMIT", "screen_root_candidates",
     "evaluate_root_ranker", "optimize_root_ranker", "predict_root", "score_root_candidates",
-    "topology_upstreamness_scores", "weight_grid", "process_diagnosis",
-    "rolling_statistics", "cross_sensor_relationships", "change_point_detection",
-    "wavelet_denoising", "cross_correlation_analysis", "correlation_sensor_weighting",
-    "multisensor_fusion", "default_tool_registry",
+    "topology_upstreamness_scores", "weight_grid",
+    "WindNormalBehaviorState", "scada_quality_check", "detect_wind_operating_regimes",
+    "fit_wind_normal_behavior_model", "normal_behavior_model", "predict_wind_normal_behavior",
+    "wind_residual_anomaly_detection", "process_diagnosis", "rolling_statistics",
+    "cross_sensor_relationships", "change_point_detection", "wavelet_denoising",
+    "cross_correlation_analysis", "correlation_sensor_weighting", "multisensor_fusion",
+    "default_tool_registry",
 ]
