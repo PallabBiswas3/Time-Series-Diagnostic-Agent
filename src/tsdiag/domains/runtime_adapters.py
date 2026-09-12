@@ -14,6 +14,7 @@ from ..models import (
     ToolTraceStep,
 )
 from .bearing_runner import BearingDiagnosticPipeline
+from .process_engine import ProcessExecutionPipeline
 from .process_runner import ProcessDiagnosticPipeline
 
 
@@ -54,18 +55,26 @@ def run_process_request(
     *,
     pipeline: ProcessDiagnosticPipeline | None = None,
 ) -> DiagnosticResult:
-    """Bridge a canonical RunRequest to the existing process/TEP pipeline."""
+    """Run process/TEP through the common ExecutionEngine runtime.
+
+    `pipeline` is retained only as a compatibility/testing escape hatch for the
+    legacy ProcessDiagnosticPipeline. Normal calls use ProcessExecutionPipeline.
+    """
 
     request.validate()
     if request.domain != "process":
         raise ValueError("run_process_request requires domain='process'")
 
+    if pipeline is None:
+        return ProcessExecutionPipeline().run_request(request)
+
+    # Backwards-compatible adapter for callers that explicitly inject the legacy
+    # runner. This path can be removed after downstream callers are migrated.
     metadata = dict(request.metadata)
     for name in ("sampling_rate_hz", "channel_names", "normal_reference"):
         if metadata.get(name) is None:
             return _metadata_abstention(request, name)
 
-    pipeline = pipeline or ProcessDiagnosticPipeline()
     legacy = pipeline.run(
         request.observation,
         metadata["normal_reference"],
