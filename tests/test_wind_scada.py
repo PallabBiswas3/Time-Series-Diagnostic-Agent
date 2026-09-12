@@ -9,6 +9,7 @@ from tsdiag.datasets.wind_care import (
     load_care_event,
     validate_care_layout,
 )
+from tsdiag.domains.wind_scada_runner import WindScadaDiagnosticPipeline
 from tsdiag.tools.wind_scada import (
     detect_wind_operating_regimes,
     fit_wind_normal_behavior_model,
@@ -211,3 +212,54 @@ def test_operating_regime_detection_returns_requested_number():
     ]
     result = detect_wind_operating_regimes(x, driver_indices=[0, 1], n_regimes=3)
     assert len(np.unique(result["regime_ids"])) == 3
+
+
+def test_regime_driver_selection_prefers_active_power_over_reactive_power():
+    rng = np.random.default_rng(31)
+    names = [
+        "Wind Speed Avg",
+        "Reactive Power Avg",
+        "Active Power Avg",
+        "Rotor Speed Avg",
+        "Generator Speed Avg",
+        "Main Bearing Temp Avg",
+    ]
+    matrix = rng.normal(size=(300, len(names)))
+    # Make reactive power the highest-variance electrical channel to ensure the
+    # selection is semantic rather than variance-driven.
+    matrix[:, 1] *= 1000.0
+    matrix[:, 2] *= 100.0
+
+    drivers, roles = WindScadaDiagnosticPipeline._driver_selection(names, matrix)
+
+    assert roles["active_power"] == 2
+    assert 1 not in drivers
+    assert names[roles["active_power"]] == "Active Power Avg"
+
+
+def test_regime_assignment_diagnostics_flag_far_out_of_support_operation():
+    rng = np.random.default_rng(32)
+    n = 500
+    wind = rng.uniform(4.0, 12.0, n)
+    active_power = 20.0 * wind**2 + rng.normal(0.0, 20.0, n)
+    rotor_speed = 8.0 * wind + rng.normal(0.0, 1.0, n)
+    temp = 25.0 + 0.01 * active_power + rng.normal(0.0, 0.5, n)
+    train = np.column_stack([wind, active_power, rotor_speed, temp])
+
+    prediction = train[:120].copy()
+    prediction[:, 0] += 30.0
+    prediction[:, 1] += 5000.0
+    names = ["Wind Speed", "Active Power", "Rotor Speed", "Main Bearing Temp"]
+
+    result = WindScadaDiagnosticPipeline(n_regimes=3).run(
+        train,
+        prediction,
+        names,
+        target_indices=[3],
+    )
+    diagnostics = result.artifacts["regime_assignment"]
+
+    assert diagnostics["prediction_nearest_distance"].shape == (len(prediction),)
+    assert diagnostics["out_of_distribution_mask"].shape == (len(prediction),)
+    assert diagnostics["out_of_distribution_fraction"] > 0.50
+    assert result.artifacts["driver_roles"]["active_power"]["channel"] == "Active Power"
