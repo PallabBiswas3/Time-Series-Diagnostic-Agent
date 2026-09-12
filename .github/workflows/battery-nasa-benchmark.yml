@@ -1,0 +1,109 @@
+name: NASA Battery Prognostics Benchmark
+
+on:
+  pull_request:
+    paths:
+      - "src/tsdiag/datasets/battery_nasa.py"
+      - "src/tsdiag/tools/battery.py"
+      - "src/tsdiag/domains/battery_runner.py"
+      - "src/tsdiag/benchmarks/battery_nasa.py"
+      - "scripts/run_battery_nasa_benchmark.py"
+      - "tests/test_battery_nasa.py"
+      - ".github/workflows/battery-nasa-benchmark.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: nasa-battery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  battery-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Battery tests
+        run: pytest -q tests/test_battery_nasa.py
+
+  nasa-real-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: battery-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Restore NASA battery cache
+        id: battery-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/nasa_battery
+          key: nasa-battery-b0005-b0006-b0007-b0018-v1
+
+      - name: Download fixed NASA subset on cache miss
+        if: steps.battery-cache.outputs.cache-hit != 'true'
+        run: |
+          python - <<'PY'
+          from tsdiag.datasets.battery_nasa import download_nasa_battery_subset
+          paths = download_nasa_battery_subset("data/nasa_battery")
+          for path in paths:
+              print(path, path.stat().st_size)
+          PY
+
+      - name: Validate NASA MAT files
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from tsdiag.datasets.battery_nasa import NASA_BATTERY_IDS, load_nasa_battery_discharge_cycles, first_eol_cycle
+          root = Path("data/nasa_battery")
+          for battery_id in NASA_BATTERY_IDS:
+              cycles = load_nasa_battery_discharge_cycles(root / f"{battery_id}.mat", battery_id)
+              print(battery_id, len(cycles), cycles[0].capacity_ah, cycles[-1].capacity_ah, first_eol_cycle(cycles))
+          PY
+
+      - name: Save NASA battery cache
+        if: steps.battery-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/nasa_battery
+          key: ${{ steps.battery-cache.outputs.cache-primary-key }}
+
+      - name: Run fixed NASA battery benchmark
+        run: |
+          python scripts/run_battery_nasa_benchmark.py \
+            --data-dir data/nasa_battery \
+            --output-dir outputs/battery_nasa
+
+      - name: Show benchmark summary
+        if: always()
+        run: |
+          if [ -f outputs/battery_nasa/battery_nasa_benchmark.json ]; then
+            python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("outputs/battery_nasa/battery_nasa_benchmark.json").read_text())
+          print(json.dumps(payload["summary"], indent=2))
+          if payload.get("failures"):
+              print(json.dumps(payload["failures"], indent=2))
+          PY
+          fi
+
+      - name: Upload NASA battery outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nasa-battery-benchmark
+          path: outputs/battery_nasa/**
+          if-no-files-found: warn
