@@ -105,9 +105,12 @@ def _summary(records: list[BearingRecordResult]) -> dict:
         if np.any(covered)
         else None
     )
-    false_alarm_rate = float(np.mean((pred != "normal") & ~abstained)[normal]) if np.any(normal) else None
+
+    false_alarm_flags = (pred != "normal") & ~abstained
+    detected_fault_flags = (pred != "normal") & ~abstained
+    false_alarm_rate = float(np.mean(false_alarm_flags[normal])) if np.any(normal) else None
     normal_abstention_rate = float(np.mean(abstained[normal])) if np.any(normal) else None
-    fault_detection_rate = float(np.mean((pred != "normal") & ~abstained)[faulty]) if np.any(faulty) else None
+    fault_detection_rate = float(np.mean(detected_fault_flags[faulty])) if np.any(faulty) else None
 
     by_load: dict[str, dict] = {}
     for load in sorted({row.load_hp for row in records}):
