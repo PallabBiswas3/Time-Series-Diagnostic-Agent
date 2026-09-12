@@ -11,6 +11,7 @@ from tsdiag.datasets.wind_care import (
 )
 from tsdiag.domains.wind_scada_runner import WindScadaDiagnosticPipeline
 from tsdiag.tools.wind_scada import (
+    WindNormalBehaviorState,
     detect_wind_operating_regimes,
     fit_wind_normal_behavior_model,
     predict_wind_normal_behavior,
@@ -203,6 +204,57 @@ def test_oos_residual_calibration_recenters_systematic_healthy_model_bias():
     assert abs(np.nanmedian(z)) < 0.5
 
 
+def test_fit_records_finite_per_regime_residual_calibration():
+    rng = np.random.default_rng(24)
+    n = 1000
+    regime = np.r_[np.zeros(n // 2, dtype=int), np.ones(n // 2, dtype=int)]
+    wind = np.r_[rng.uniform(3.0, 7.0, n // 2), rng.uniform(9.0, 14.0, n // 2)]
+    power = np.where(regime == 0, 17.0 * wind**2, 760.0 + 9.0 * wind) + rng.normal(0.0, 18.0, n)
+    temp = 20.0 + 0.012 * power + np.where(regime == 0, -1.5, 2.0) + rng.normal(0.0, 0.7, n)
+    ref = np.column_stack([wind, power, temp])
+
+    state = fit_wind_normal_behavior_model(
+        ref,
+        regime,
+        target_indices=[2],
+        predictor_indices=[0, 1, 2],
+    )
+
+    assert set(state.residual_center_by_regime) == {0, 1}
+    assert set(state.residual_scale_by_regime) == {0, 1}
+    assert np.isfinite(state.residual_center_by_regime[0][0])
+    assert np.isfinite(state.residual_center_by_regime[1][0])
+    assert state.residual_scale_by_regime[0][0] > 0.0
+    assert state.residual_scale_by_regime[1][0] > 0.0
+
+
+def test_prediction_uses_regime_specific_residual_center_and_scale():
+    class ZeroModel:
+        def predict(self, x):
+            return np.zeros(len(x), dtype=float)
+
+    state = WindNormalBehaviorState(
+        target_indices=[1],
+        predictor_indices=[0],
+        models={(0, 1): ZeroModel(), (1, 1): ZeroModel()},
+        global_models={1: ZeroModel()},
+        residual_center=np.array([0.0]),
+        residual_scale=np.array([10.0]),
+        residual_center_by_regime={0: np.array([1.0]), 1: np.array([5.0])},
+        residual_scale_by_regime={0: np.array([2.0]), 1: np.array([4.0])},
+        regime_ids=[0, 1],
+    )
+    x = np.array([
+        [0.0, 3.0],
+        [0.0, 9.0],
+    ])
+    prediction = predict_wind_normal_behavior(x, np.array([0, 1]), state)
+
+    assert np.allclose(prediction["normalized_residuals"][:, 0], [1.0, 1.0])
+    assert np.allclose(prediction["residual_center_used"][:, 0], [1.0, 5.0])
+    assert np.allclose(prediction["residual_scale_used"][:, 0], [2.0, 4.0])
+
+
 def test_operating_regime_detection_returns_requested_number():
     rng = np.random.default_rng(8)
     x = np.r_[
@@ -225,8 +277,6 @@ def test_regime_driver_selection_prefers_active_power_over_reactive_power():
         "Main Bearing Temp Avg",
     ]
     matrix = rng.normal(size=(300, len(names)))
-    # Make reactive power the highest-variance electrical channel to ensure the
-    # selection is semantic rather than variance-driven.
     matrix[:, 1] *= 1000.0
     matrix[:, 2] *= 100.0
 
