@@ -80,7 +80,12 @@ class TransformerDiagnosticPipeline:
         rule_reference=context.get("transformer_rule_reference")
         rule_result=None
         if rule_reference is not None:
-            rule_result=transformer_rule_diagnosis(signal_matrix,rule_reference,threshold=float(context.get("transformer_rule_threshold",3.0)))
+            rule_result=transformer_rule_diagnosis(
+                signal_matrix,
+                rule_reference,
+                threshold=float(context.get("transformer_rule_threshold",3.0)),
+                external_asymmetry_threshold=float(context.get("transformer_external_asymmetry_threshold",4.0)),
+            )
 
         label=state["fault_label"]
         classifier_confidence=float(np.clip(state.get("model_confidence",0.0),0,1))
@@ -98,7 +103,7 @@ class TransformerDiagnosticPipeline:
                 abnormal=True; reason=None; confidence=classifier_confidence; decision="diagnose"
             else:
                 abnormal=False; reason=None; confidence=float(rule_result["confidence"]); decision="monitor"
-            method="deterministic_transformer_protection_rules_v1"
+            method="deterministic_transformer_protection_rules_v2"
         else:
             physics_abnormal=bool(state["abnormal"])
             abnormal=physics_abnormal or classifier_positive
@@ -118,9 +123,10 @@ class TransformerDiagnosticPipeline:
             ev=Evidence("multisensor_fusion",f"Fused-waveform kurtosis={state['harmonic_structure']['kurtosis']:.2f}; classifier label={label!r}.",confidence,evidence_payload,"transformer-fusion-evidence","signal")
         trace[4].evidence_ids.append(ev.evidence_id)
         verification=[transformer_physics_verification(state, ev.evidence_id)]
-        detection_score=float(rule_result["rule_score"] if rule_result is not None else max(state["harmonic_structure"]["anomaly_score"],classifier_confidence if classifier_positive else 0.0))
+        raw_score=float(rule_result["rule_score"] if rule_result is not None else max(state["harmonic_structure"]["anomaly_score"],classifier_confidence if classifier_positive else 0.0))
+        detection_score=float(np.clip(raw_score,0,1))
         return _finish(DiagnosticResult(domain="transformer",task="fault_diagnosis",decision=decision,
-            detection=DetectionResult(abnormal,detection_score,method=method,details={"rule_result":rule_result,"classifier_positive":classifier_positive}),
+            detection=DetectionResult(abnormal,detection_score,method=method,details={"raw_rule_score":raw_score,"rule_result":rule_result,"classifier_positive":classifier_positive}),
             localization=LocalizationResult(channels=[top],scores=weights),
             hypotheses=[DiagnosticHypothesis(str(label),confidence,evidence_ids=[ev.evidence_id])] if decision=="diagnose" and label else [],evidence=[ev],verification=verification,
             confidence=confidence,uncertainty=1-confidence,abstained=abstained,abstain_reason=reason,
