@@ -7,7 +7,7 @@ from .domains import DOMAIN_PACKS
 from .domains.runners import WindScadaDiagnosticPipeline
 from .execution import DomainInputSchema, InputField, StepExecutionError, WorkflowExecutor
 from .models import DetectionResult, DiagnosticResult, ToolTraceStep
-from .registry import domain_registry
+from .registry import domain_registry, model_registry, policy_registry
 from .result_contract import standardize_result
 
 PIPELINE_VERSION = "1.0.0"
@@ -72,6 +72,14 @@ def _ensure_plugins() -> None:
         if domain_registry.get(plugin.name) is None:
             domain_registry.register(plugin)
 
+        # Register both a stable alias and the concrete policy version. The
+        # factory is request-aware, but the resulting policy keeps the small
+        # decide(execution, trace) interface.
+        probe = plugin.policy(DiagnosticRequest(domain=plugin.name, task=None, inputs={}))
+        factory = lambda request, p=plugin: p.policy(request)
+        policy_registry.register(plugin.name, "default", factory)
+        policy_registry.register(plugin.name, str(probe.version), factory)
+
 
 def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
     _ensure_plugins()
@@ -80,7 +88,11 @@ def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
         plugin = domain_registry.resolve(request.domain)
         validated = dict(plugin.validate(request))
         execution, trace = WorkflowExecutor().run(plugin.workflow(request), validated)
-        result = plugin.policy(request).decide(execution, trace)
+        if request.policy_ref:
+            policy = policy_registry.resolve(request.domain, request.policy_ref)(request)
+        else:
+            policy = plugin.policy(request)
+        result = policy.decide(execution, trace)
         if request.task is not None:
             result.task = request.task
         result.metadata.setdefault("pipeline_version", PIPELINE_VERSION)
@@ -92,6 +104,13 @@ def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
             })
         if request.model_refs:
             result.metadata.setdefault("model_refs", dict(request.model_refs))
+            resolved_versions = {
+                slot: record.version
+                for slot, ref in request.model_refs.items()
+                if (record := model_registry.get(ref)) is not None
+            }
+            if resolved_versions:
+                result.metadata.setdefault("resolved_model_versions", resolved_versions)
         if request.policy_ref:
             result.metadata.setdefault("policy_ref", request.policy_ref)
         return standardize_result(result, pipeline_version=PIPELINE_VERSION)
@@ -138,8 +157,6 @@ class DiagnosticPipeline:
         except (TypeError, ValueError) as exc:
             return _abstain(domain, default_task, f"Input validation failed: {exc}")
 
-        # Compatibility-only Wind API. The canonical Wind workflow is the
-        # structured DiagnosticRequest path used by the CARE benchmark.
         if domain == "wind_scada":
             try:
                 return _with_task(WindScadaDiagnosticPipeline().run(**values), task)
@@ -150,10 +167,6 @@ class DiagnosticPipeline:
             except Exception as exc:
                 return _abstain(domain, default_task, f"Pipeline execution failed in {domain}: {exc}")
 
-        # All other legacy calls now cross the same plugin/workflow/policy
-        # boundary as structured callers. Existing validated runners remain
-        # wrapped inside compatibility workflow steps until their internals are
-        # decomposed safely.
         return _diagnose_request(DiagnosticRequest(
             domain=domain,
             task=default_task,
