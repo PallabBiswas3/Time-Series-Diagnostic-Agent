@@ -6,7 +6,16 @@ from .battery import BATTERY_PACK
 from .turbofan import TURBOFAN_PACK
 from .transformer import TRANSFORMER_PACK
 from .bearing_runner import BearingDiagnosticPipeline
-from .runners import BatteryDiagnosticPipeline, TransformerDiagnosticPipeline, TurbofanDiagnosticPipeline, WindScadaDiagnosticPipeline
+from .runners import (
+    BatteryDiagnosticPipeline,
+    TransformerDiagnosticPipeline,
+    TurbofanDiagnosticPipeline,
+    WindScadaDiagnosticPipeline,
+)
+from .wind_scada_runner import (
+    WindScadaDiagnosticPipeline as WindScadaBenchmarkPipeline,
+    WindScadaDiagnosticResult as WindScadaBenchmarkResult,
+)
 from .domain_steps import default_domain_tool_registry
 
 DOMAIN_PACKS = {
@@ -42,6 +51,8 @@ __all__ = [
     "get_domain_pack",
     "BearingDiagnosticPipeline",
     "WindScadaDiagnosticPipeline",
+    "WindScadaBenchmarkPipeline",
+    "WindScadaBenchmarkResult",
     "BatteryDiagnosticPipeline",
     "TurbofanDiagnosticPipeline",
     "TransformerDiagnosticPipeline",
