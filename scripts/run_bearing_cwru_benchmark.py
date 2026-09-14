@@ -5,28 +5,17 @@ import json
 from pathlib import Path
 
 from tsdiag import diagnose
-from tsdiag.benchmarks import bearing_cwru as benchmark_module
+from tsdiag.benchmarks.bearing_cwru import run_cwru_benchmark
 from tsdiag.contracts import DiagnosticRequest, RunContext
 from tsdiag.datasets.bearing_cwru import download_cwru_007_drive_end
 
 
-class _PublicBearingPipeline:
-    """Temporary benchmark adapter exercising the canonical Bearing policy."""
-
+class PublicBearingPipeline:
     def __init__(self, *, minimum_confidence: float = 0.45, minimum_harmonics: int = 2):
         self.minimum_confidence = float(minimum_confidence)
         self.minimum_harmonics = int(minimum_harmonics)
 
-    def run(
-        self,
-        signal,
-        sampling_rate_hz: float,
-        *,
-        fault_frequencies=None,
-        shaft_rate_hz=None,
-        channel_name="ch0",
-        operating_condition=None,
-    ):
+    def run(self, signal, sampling_rate_hz: float, *, fault_frequencies=None, shaft_rate_hz=None, channel_name="ch0", operating_condition=None):
         return diagnose(DiagnosticRequest(
             domain="bearing",
             task="fault_diagnosis",
@@ -86,16 +75,14 @@ def main() -> None:
         paths = download_cwru_007_drive_end(data_dir)
         print(f"CWRU files ready: {len(paths)}")
 
-    # Compatibility shim only; labels/aggregation stay evaluation-side. The
-    # benchmark module will be converted to direct request construction next.
-    benchmark_module.BearingDiagnosticPipeline = _PublicBearingPipeline
-    result = benchmark_module.run_cwru_benchmark(
+    result = run_cwru_benchmark(
         data_dir,
         window_seconds=args.window_seconds,
         max_windows=args.max_windows,
         minimum_confidence=args.minimum_confidence,
         minimum_harmonics=args.minimum_harmonics,
         output_dir=args.output_dir,
+        pipeline_factory=PublicBearingPipeline,
     )
     print(json.dumps(result["summary"], indent=2))
     if result["failures"]:
