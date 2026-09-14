@@ -22,6 +22,7 @@ from .models import (
     LocalizationResult,
     ToolTraceStep,
 )
+from .result_contract import standardize_result
 
 PIPELINE_VERSION = "1.0.0"
 
@@ -43,7 +44,7 @@ def get_input_schema(domain: str) -> DomainInputSchema:
 
 
 def _abstain(domain: str, task: str, reason: str, trace: list[ToolTraceStep] | None = None) -> DiagnosticResult:
-    result = DiagnosticResult(
+    return standardize_result(DiagnosticResult(
         domain=domain,
         task=task,
         decision="abstain",
@@ -54,9 +55,7 @@ def _abstain(domain: str, task: str, reason: str, trace: list[ToolTraceStep] | N
         abstain_reason=reason,
         tool_trace=trace or [ToolTraceStep("input_validation", status="warning", details={"reason": reason})],
         metadata={"pipeline_version": PIPELINE_VERSION},
-    )
-    result.validate()
-    return result
+    ), pipeline_version=PIPELINE_VERSION)
 
 
 def _process_result(raw: ProcessDiagnosticResult) -> DiagnosticResult:
@@ -82,7 +81,7 @@ def _process_result(raw: ProcessDiagnosticResult) -> DiagnosticResult:
     abstained = bool(raw.fault_detected and raw.abstain_reason)
     decision = "abstain" if abstained else ("diagnose" if raw.fault_detected else "monitor")
     confidence = float(np.clip(raw.confidence, 0.0, 1.0))
-    result = DiagnosticResult(
+    return standardize_result(DiagnosticResult(
         domain="process", task="root_cause", decision=decision,
         detection=DetectionResult(abnormal=raw.fault_detected, score=confidence, method="pca_process_pipeline"),
         localization=LocalizationResult(
@@ -96,16 +95,13 @@ def _process_result(raw: ProcessDiagnosticResult) -> DiagnosticResult:
         recommended_actions=["Verify the proposed root cause against process topology and operating history."] if raw.root_cause else [],
         tool_trace=[ToolTraceStep(name, duration_seconds=(raw.timings or {}).get(name, 0.0), evidence_ids=["process-diagnostic-evidence"] if name == "process_diagnosis" and evidence else []) for name in raw.tool_trace],
         metadata={"pipeline_version": PIPELINE_VERSION, "artifacts": raw.artifacts},
-    )
-    result.validate()
-    return result
+    ), pipeline_version=PIPELINE_VERSION)
 
 
 def _with_task(result: DiagnosticResult, task: str | None) -> DiagnosticResult:
     if task is not None:
         result.task = task
-        result.validate()
-    return result
+    return standardize_result(result, pipeline_version=PIPELINE_VERSION)
 
 
 class DiagnosticPipeline:
