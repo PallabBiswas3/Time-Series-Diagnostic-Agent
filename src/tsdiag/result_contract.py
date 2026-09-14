@@ -61,7 +61,10 @@ def standardize_result(
     failed_tools = [step.tool for step in trace_rows if step.status == "error"]
     skipped_tools = [step.tool for step in trace_rows if step.status == "skipped"]
 
-    result.metadata.setdefault("pipeline_version", pipeline_version)
+    # The outer orchestration boundary is authoritative. Nested/legacy runners
+    # may standardize results earlier, but they must not freeze an older public
+    # pipeline version into the final envelope.
+    result.metadata["pipeline_version"] = pipeline_version
     if result.provenance is None:
         result.provenance = RunProvenance(
             workflow_version=result.metadata.get("workflow_version"),
@@ -105,7 +108,7 @@ def standardize_result(
 
 
 def result_summary(result: DiagnosticResult) -> dict[str, Any]:
-    standardized = standardize_result(result)
+    standardized = standardize_result(result, pipeline_version=result.metadata.get("pipeline_version", "1.0.0"))
     return {
         "domain": standardized.domain,
         "task": standardized.task,
