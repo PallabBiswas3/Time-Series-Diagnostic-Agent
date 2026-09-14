@@ -79,17 +79,26 @@ class TurbofanDiagnosticPipeline:
 class TransformerDiagnosticPipeline:
     def run(self, signal_matrix, sampling_rate_hz, sensor_positions, **context):
         state,trace=_execute("transformer",{**context,"signal_matrix":signal_matrix,"sampling_rate_hz":sampling_rate_hz,"sensor_positions":sensor_positions})
-        abnormal=state["abnormal"]; label=state["fault_label"]; reason=state["abstain_reason"]; confidence=state["confidence"]
-        abstained=bool(reason); decision="abstain" if abstained else ("diagnose" if abnormal and label else "monitor")
+        label=state["fault_label"]
+        classifier_confidence=float(np.clip(state.get("model_confidence",0.0),0,1))
+        classifier_threshold=float(context.get("classifier_diagnosis_threshold",0.5))
+        classifier_positive=bool(label) and classifier_confidence>=classifier_threshold
+        physics_abnormal=bool(state["abnormal"])
+        abnormal=physics_abnormal or classifier_positive
+        reason=None if classifier_positive else state["abstain_reason"]
+        confidence=max(float(state["confidence"]),classifier_confidence if classifier_positive else 0.0)
+        abstained=bool(reason)
+        decision="abstain" if abstained else ("diagnose" if abnormal and label else "monitor")
         weights=dict(zip(state["sensor_positions"],np.asarray(state["sensor_weights"]).tolist())); top=max(weights,key=weights.get)
         ev=Evidence("multisensor_fusion",f"Fused-waveform kurtosis={state['harmonic_structure']['kurtosis']:.2f}; classifier label={label!r}.",confidence,
-                    {"sensor_weights":weights,"feature_image_shape":state["representation_metadata"]["shape"]},"transformer-fusion-evidence","signal")
+                    {"sensor_weights":weights,"feature_image_shape":state["representation_metadata"]["shape"],"classifier_confidence":classifier_confidence,"physics_abnormal":physics_abnormal},"transformer-fusion-evidence","signal")
         trace[4].evidence_ids.append(ev.evidence_id)
         verification=[transformer_physics_verification(state, ev.evidence_id)]
+        detection_score=max(float(state["harmonic_structure"]["anomaly_score"]),classifier_confidence if classifier_positive else 0.0)
         return _finish(DiagnosticResult(
             domain="transformer",task="fault_diagnosis",decision=decision,
-            detection=DetectionResult(abnormal,state["harmonic_structure"]["anomaly_score"],method="wavelet_multisensor_impulsiveness"),
+            detection=DetectionResult(abnormal,detection_score,method="wavelet_multisensor_classifier_fusion",details={"physics_abnormal":physics_abnormal,"classifier_positive":classifier_positive,"classifier_threshold":classifier_threshold}),
             localization=LocalizationResult(channels=[top],scores=weights),hypotheses=[DiagnosticHypothesis(str(label),confidence,evidence_ids=[ev.evidence_id])] if label else [],evidence=[ev],verification=verification,
             confidence=confidence,uncertainty=1-confidence,abstained=abstained,abstain_reason=reason,
             recommended_actions=["Supply a validated fault classifier to label the detected condition."] if abstained else [],tool_trace=trace,
-            metadata={"sensor_weights":weights,"feature_image_shape":state["representation_metadata"]["shape"]}))
+            metadata={"sensor_weights":weights,"feature_image_shape":state["representation_metadata"]["shape"],"classifier_confidence":classifier_confidence,"physics_abnormal":physics_abnormal}))
