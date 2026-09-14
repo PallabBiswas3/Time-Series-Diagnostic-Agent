@@ -92,15 +92,19 @@ class BatteryPackPlugin:
         return values
 
     def workflow(self, request: DiagnosticRequest) -> Workflow:
+        # Use the canonical Battery DomainPack tool names so the declarative
+        # workflow, registry, and documented contracts stay in lockstep.
         ids = (
             "battery_data_quality",
-            "robust_pack_reference",
+            "operating_state_segmentation",
             "cell_deviation_features",
-            "temporal_windows",
-            "weak_state_model",
+            "battery_temporal_features",
+            "cell_spatial_consistency",
+            "adaptive_window_builder",
+            "battery_spatiotemporal_model",
+            "battery_anomaly_localization",
+            "battery_failure_prognosis",
             "battery_decision",
-            "failure_probability_horizon",
-            "prognosis_uncertainty",
         )
         steps = []
         previous = None
