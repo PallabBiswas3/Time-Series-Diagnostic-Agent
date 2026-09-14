@@ -8,20 +8,32 @@ on:
       - "src/tsdiag/datasets/bearing_cwru.py"
       - "src/tsdiag/benchmarks/bearing_cwru.py"
       - "src/tsdiag/domains/bearing_runner.py"
+      - "src/tsdiag/domains/compat_plugins.py"
+      - "src/tsdiag/contracts.py"
+      - "src/tsdiag/execution.py"
+      - "src/tsdiag/pipeline.py"
+      - "src/tsdiag/registry.py"
       - "src/tsdiag/tools/bearing.py"
       - "src/tsdiag/tools/signal.py"
       - "scripts/run_bearing_cwru_benchmark.py"
       - "tests/test_bearing*"
+      - "tests/test_plugin_architecture.py"
       - ".github/workflows/bearing-cwru-benchmark.yml"
   pull_request:
     paths:
       - "src/tsdiag/datasets/bearing_cwru.py"
       - "src/tsdiag/benchmarks/bearing_cwru.py"
       - "src/tsdiag/domains/bearing_runner.py"
+      - "src/tsdiag/domains/compat_plugins.py"
+      - "src/tsdiag/contracts.py"
+      - "src/tsdiag/execution.py"
+      - "src/tsdiag/pipeline.py"
+      - "src/tsdiag/registry.py"
       - "src/tsdiag/tools/bearing.py"
       - "src/tsdiag/tools/signal.py"
       - "scripts/run_bearing_cwru_benchmark.py"
       - "tests/test_bearing*"
+      - "tests/test_plugin_architecture.py"
       - ".github/workflows/bearing-cwru-benchmark.yml"
   workflow_dispatch:
 
@@ -43,7 +55,7 @@ jobs:
           pip install -e ".[dev]"
       - name: Bearing tests
         run: |
-          pytest -q tests/test_bearing_runner.py tests/test_bearing_cwru.py
+          pytest -q tests/test_bearing_runner.py tests/test_bearing_cwru.py tests/test_plugin_architecture.py
 
   cwru-real-data:
     runs-on: ubuntu-latest
@@ -98,7 +110,7 @@ jobs:
           path: data/cwru_007_de
           key: ${{ steps.cwru-cache.outputs.cache-primary-key }}
 
-      - name: Run fixed real-data CWRU benchmark
+      - name: Run fixed real-data CWRU benchmark through public diagnose path
         run: |
           python scripts/run_bearing_cwru_benchmark.py \
             --data-dir data/cwru_007_de \
