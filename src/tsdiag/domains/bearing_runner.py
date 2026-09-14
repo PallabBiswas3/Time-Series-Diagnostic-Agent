@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any
-from time import perf_counter
 
 import numpy as np
 
@@ -11,20 +10,10 @@ from ..models import (
     DiagnosticResult,
     Evidence,
     LocalizationResult,
-    ToolTraceStep,
     VerificationResult,
 )
-from ..execution import StepExecutionError
-from ..tools.bearing import bearing_evidence_fusion, bearing_frequency_match
-from ..tools.signal import (
-    bandpass_filter,
-    envelope_spectrum,
-    hilbert_envelope,
-    signal_integrity,
-    spectral_kurtosis,
-    time_domain_features,
-    welch_psd,
-)
+from ..execution import StepExecutor
+from .domain_steps import default_domain_tool_registry
 
 
 _FAULT_COMPONENTS = {
@@ -35,19 +24,12 @@ _FAULT_COMPONENTS = {
 }
 
 
-def _timed(trace, name, fn, *args, **kwargs):
-    started = perf_counter()
-    try:
-        output = fn(*args, **kwargs)
-    except Exception as exc:
-        trace.append(ToolTraceStep(name, status="error", duration_seconds=perf_counter()-started, details={"error_type": type(exc).__name__, "message": str(exc)}))
-        raise StepExecutionError(name, str(exc), list(trace)) from exc
-    trace.append(ToolTraceStep(name, duration_seconds=perf_counter()-started))
-    return output
-
-
 class BearingDiagnosticPipeline:
-    """Evidence-grounded bearing diagnosis with automatic resonance-band selection."""
+    """Evidence-grounded bearing diagnosis with automatic resonance-band selection.
+
+    Tool execution is delegated to the shared :class:`StepExecutor`; diagnosis,
+    thresholds, evidence fusion and abstention logic remain unchanged.
+    """
 
     def __init__(
         self,
@@ -82,10 +64,18 @@ class BearingDiagnosticPipeline:
         fault_frequencies = dict(fault_frequencies or {})
 
         evidence: list[Evidence] = []
-        trace: list[ToolTraceStep] = []
+        state: dict[str, Any] = {
+            "signal": x,
+            "sampling_rate_hz": fs,
+            "fault_frequencies": fault_frequencies,
+            "shaft_rate_hz": shaft_rate_hz,
+            "operating_condition": dict(operating_condition or {}),
+        }
+        executor = StepExecutor("bearing", default_domain_tool_registry())
+        trace = executor.trace
 
-        quality = _timed(trace, "signal_integrity", signal_integrity, x, fs)
-        trace[-1].outputs_summary={"quality_flags": quality["quality_flags"]}
+        quality = executor.run("signal_integrity", state)
+        trace[-1].outputs_summary = {"quality_flags": quality["quality_flags"]}
         fatal_quality = {"nan_or_inf", "too_short", "invalid_sampling_rate", "no_finite_samples"}
         if fatal_quality.intersection(quality["quality_flags"]):
             result = DiagnosticResult(
@@ -103,7 +93,11 @@ class BearingDiagnosticPipeline:
             result.validate()
             return result
 
-        features = _timed(trace, "time_domain_features", time_domain_features, x)
+        features = executor.run("time_domain_features", state)
+        # The generic tool writes scalar feature keys into shared state. Preserve
+        # the structured feature object as well because bearing_evidence_fusion
+        # consumes it as one contracted input.
+        state["time_domain_features"] = features
         ev_features = Evidence(
             source="time_domain_features",
             statement=(
@@ -119,7 +113,7 @@ class BearingDiagnosticPipeline:
         evidence.append(ev_features)
         trace[-1].evidence_ids.append(ev_features.evidence_id)
 
-        psd = _timed(trace, "welch_psd", welch_psd, x, fs)
+        psd = executor.run("welch_psd", state)
         ev_psd = Evidence(
             source="welch_psd",
             statement=f"Computed Welch PSD with {len(psd['dominant_peaks'])} dominant peaks.",
@@ -132,7 +126,7 @@ class BearingDiagnosticPipeline:
         evidence.append(ev_psd)
         trace[-1].evidence_ids.append(ev_psd.evidence_id)
 
-        sk = _timed(trace, "spectral_kurtosis", spectral_kurtosis, x, fs)
+        sk = executor.run("spectral_kurtosis", state)
         band = sk.get("recommended_band_hz")
         if band is None:
             result = DiagnosticResult(
@@ -163,10 +157,10 @@ class BearingDiagnosticPipeline:
         evidence.append(ev_band)
         trace[-1].evidence_ids.append(ev_band.evidence_id)
 
-        filtered = _timed(trace, "bandpass_filter", bandpass_filter, x, fs, band)
-        trace[-1].outputs_summary=filtered["filter_metadata"]
-        envelope = _timed(trace, "hilbert_envelope", hilbert_envelope, filtered["filtered_signal"])
-        env_spec = _timed(trace, "envelope_spectrum", envelope_spectrum, envelope["envelope"], fs)
+        filtered = executor.run("bandpass_filter", state)
+        trace[-1].outputs_summary = filtered["filter_metadata"]
+        envelope = executor.run("hilbert_envelope", state)
+        env_spec = executor.run("envelope_spectrum", state)
 
         if not fault_frequencies:
             result = DiagnosticResult(
@@ -190,19 +184,12 @@ class BearingDiagnosticPipeline:
             result.validate()
             return result
 
-        match = _timed(trace, "bearing_frequency_match", bearing_frequency_match,
-            env_spec["frequency_hz"],
-            env_spec["envelope_power"],
-            fault_frequencies,
-            shaft_rate_hz=shaft_rate_hz,
-        )
+        match = executor.run("bearing_frequency_match", state)
         ranking = match["fault_ranking"]
-        fusion = _timed(trace, "bearing_evidence_fusion", bearing_evidence_fusion,
-            features,
-            ranking,
-            transient_band=band,
-            operating_condition=operating_condition,
-        )
+        # Keep the exact pre-migration fusion inputs. The shared registry adapter
+        # accepts this structured feature object and transient resonance band.
+        state["transient_band"] = band
+        fusion = executor.run("bearing_evidence_fusion", state)
 
         best_fault = ranking[0]["fault"] if ranking else None
         harmonic_matches = match["harmonic_matches"].get(best_fault, []) if best_fault else []
