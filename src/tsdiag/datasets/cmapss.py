@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from urllib.request import urlopen
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 import numpy as np
 
@@ -90,6 +90,37 @@ def validate_cmapss_subset(root: str | Path, subset: str) -> dict:
     }
 
 
+def _find_named_member(archive_bytes: bytes, basename: str, *, depth: int = 0) -> bytes | None:
+    """Find one file by basename inside a ZIP or nested ZIPs.
+
+    NASA currently wraps CMAPSSData.zip inside the public repository archive.
+    Searching recursively keeps the loader independent of those wrapper names
+    while still requiring a unique requested basename.
+    """
+    if depth > 4:
+        return None
+    try:
+        with ZipFile(BytesIO(archive_bytes)) as archive:
+            direct = [name for name in archive.namelist() if Path(name).name == basename]
+            if len(direct) > 1:
+                raise ValueError(f"Multiple archive members match {basename}: {direct}")
+            if direct:
+                return archive.read(direct[0])
+
+            found: list[bytes] = []
+            for name in archive.namelist():
+                if not name.lower().endswith(".zip"):
+                    continue
+                nested = _find_named_member(archive.read(name), basename, depth=depth + 1)
+                if nested is not None:
+                    found.append(nested)
+            if len(found) > 1:
+                raise ValueError(f"Multiple nested archives contain {basename}")
+            return found[0] if found else None
+    except BadZipFile:
+        return None
+
+
 def download_cmapss(
     destination: str | Path,
     *,
@@ -98,8 +129,9 @@ def download_cmapss(
 ) -> list[Path]:
     """Download the fixed NASA C-MAPSS train/test/RUL text files.
 
-    Files are extracted by basename from NASA's official archive so the loader is
-    insensitive to the archive's enclosing directory name.
+    NASA's PCoE download is an outer repository ZIP containing an inner C-MAPSS
+    archive. Requested files are resolved recursively by exact basename so the
+    dataset contract does not depend on wrapper-directory/archive names.
     """
     root = Path(destination)
     root.mkdir(parents=True, exist_ok=True)
@@ -114,13 +146,12 @@ def download_cmapss(
 
     with urlopen(CMAPSS_URL, timeout=120) as response:
         archive_bytes = response.read()
-    with ZipFile(BytesIO(archive_bytes)) as archive:
-        members = archive.namelist()
-        for output_path in required:
-            matches = [name for name in members if Path(name).name == output_path.name]
-            if len(matches) != 1:
-                raise ValueError(f"Expected one archive member for {output_path.name}, found {matches}")
-            output_path.write_bytes(archive.read(matches[0]))
+
+    for output_path in required:
+        payload = _find_named_member(archive_bytes, output_path.name)
+        if payload is None:
+            raise ValueError(f"Could not find {output_path.name} in NASA C-MAPSS archive")
+        output_path.write_bytes(payload)
 
     for path in required:
         if not path.exists() or path.stat().st_size == 0:
