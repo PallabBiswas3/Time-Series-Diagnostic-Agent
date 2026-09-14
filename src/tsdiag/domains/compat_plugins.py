@@ -14,6 +14,7 @@ from ..models import (
     Evidence,
     LocalizationResult,
     ToolTraceStep,
+    UncertaintyEstimate,
 )
 from ..result_contract import standardize_result
 from .bearing_runner import BearingDiagnosticPipeline
@@ -26,17 +27,6 @@ def _model_version(request: DiagnosticRequest) -> str | None:
     return values[0] if len(values) == 1 else (";".join(values) if values else None)
 
 
-def _workflow_trace_metadata(trace: ExecutionTrace) -> list[dict[str, Any]]:
-    return [
-        {
-            "step": step.tool,
-            "status": step.status,
-            "duration_seconds": float(step.duration_seconds),
-        }
-        for step in trace.steps
-    ]
-
-
 def _stamp_result(
     result: DiagnosticResult,
     request: DiagnosticRequest,
@@ -45,18 +35,30 @@ def _stamp_result(
     workflow_version: str,
     policy_version: str,
 ) -> DiagnosticResult:
-    """Add new-architecture provenance without changing domain science.
-
-    The wrapped runner's detailed chronological tool trace remains the public
-    ``result.tool_trace`` during migration. The outer workflow trace records the
-    compatibility boundary separately so no existing audit detail is lost.
-    """
+    """Attach compatibility-runner internals as children of the shared workflow trace."""
+    inner_trace = list(result.tool_trace)
+    if trace.steps and inner_trace:
+        trace.steps[0].children.extend(inner_trace)
+    result.tool_trace = trace
     result.metadata["workflow_version"] = workflow_version
     result.metadata["policy_version"] = policy_version
     result.metadata["model_version"] = _model_version(request)
     result.metadata["model_refs"] = dict(request.model_refs)
     result.metadata["compatibility_adapter"] = True
-    result.metadata["outer_workflow_trace"] = _workflow_trace_metadata(trace)
+
+    # Legacy runners often reported uncertainty as exactly 1-confidence. That is
+    # not a calibrated uncertainty estimate, so stop presenting it as one while
+    # preserving the diagnostic decision and confidence themselves.
+    if result.uncertainty is not None and np.isclose(
+        float(result.uncertainty), 1.0 - float(result.confidence), atol=1e-12
+    ):
+        result.uncertainty = None
+        result.uncertainty_estimate = UncertaintyEstimate(
+            value=None,
+            method="not_calibrated_legacy_confidence_only",
+            calibrated=False,
+        )
+        result.metadata["allow_confidence_complement_uncertainty"] = False
     return standardize_result(result)
 
 
@@ -98,23 +100,18 @@ class ProcessDecisionPolicy:
                 source="process_root_cause",
                 statement=f"Detected process deviation; root-cause candidate={raw.root_cause!r}.",
                 score=float(np.clip(raw.confidence, 0.0, 1.0)),
-                details={
-                    "affected_variables": raw.affected_variables,
-                    "propagation_paths": raw.propagation_paths,
-                },
+                details={"affected_variables": raw.affected_variables, "propagation_paths": raw.propagation_paths},
                 evidence_id="process-diagnostic-evidence",
                 kind="causal",
             )
             evidence.append(ev)
             if raw.fault_label or raw.root_cause:
-                hypotheses.append(
-                    DiagnosticHypothesis(
-                        label=str(raw.fault_label or raw.root_cause),
-                        score=float(np.clip(raw.confidence, 0.0, 1.0)),
-                        rationale="Process monitoring, contribution, temporal and causal evidence were combined.",
-                        evidence_ids=[ev.evidence_id],
-                    )
-                )
+                hypotheses.append(DiagnosticHypothesis(
+                    label=str(raw.fault_label or raw.root_cause),
+                    score=float(np.clip(raw.confidence, 0.0, 1.0)),
+                    rationale="Process monitoring, contribution, temporal and causal evidence were combined.",
+                    evidence_ids=[ev.evidence_id],
+                ))
 
         abstained = bool(raw.fault_detected and raw.abstain_reason)
         decision = "abstain" if abstained else ("diagnose" if raw.fault_detected else "monitor")
@@ -123,9 +120,7 @@ class ProcessDecisionPolicy:
             ToolTraceStep(
                 name,
                 duration_seconds=(raw.timings or {}).get(name, 0.0),
-                evidence_ids=["process-diagnostic-evidence"]
-                if name == "process_diagnosis" and evidence
-                else [],
+                evidence_ids=["process-diagnostic-evidence"] if name == "process_diagnosis" and evidence else [],
             )
             for name in raw.tool_trace
         )
@@ -133,11 +128,7 @@ class ProcessDecisionPolicy:
             domain="process",
             task="root_cause",
             decision=decision,
-            detection=DetectionResult(
-                abnormal=raw.fault_detected,
-                score=confidence,
-                method="pca_process_pipeline",
-            ),
+            detection=DetectionResult(abnormal=raw.fault_detected, score=confidence, method="pca_process_pipeline"),
             localization=LocalizationResult(
                 components=[raw.root_cause] if raw.root_cause else [],
                 channels=list(raw.affected_variables),
@@ -147,27 +138,19 @@ class ProcessDecisionPolicy:
             hypotheses=hypotheses,
             evidence=evidence,
             confidence=confidence,
-            uncertainty=1.0 - confidence,
+            uncertainty=None,
+            uncertainty_estimate=UncertaintyEstimate(None, "not_calibrated_process_baseline"),
             abstained=abstained,
             abstain_reason=raw.abstain_reason,
-            recommended_actions=[
-                "Verify the proposed root cause against process topology and operating history."
-            ]
-            if raw.root_cause
-            else [],
+            recommended_actions=["Verify the proposed root cause against process topology and operating history."] if raw.root_cause else [],
             tool_trace=inner_trace,
-            metadata={"artifacts": raw.artifacts},
+            metadata={"artifacts": raw.artifacts, "allow_confidence_complement_uncertainty": False},
         )
-        return _stamp_result(
-            result,
-            self.request,
-            trace,
-            workflow_version=self.workflow_version,
-            policy_version=self.version,
-        )
+        return _stamp_result(result, self.request, trace, workflow_version=self.workflow_version, policy_version=self.version)
 
 
 class BearingPlugin:
+    """Deprecated compatibility wrapper; new callers use domains.bearing_plugin.BearingPlugin."""
     name = "bearing"
     workflow_version = "compat-1.0"
 
@@ -190,15 +173,11 @@ class BearingPlugin:
                 minimum_confidence=float(state.get("minimum_confidence", 0.45)),
                 minimum_harmonics=int(state.get("minimum_harmonics", 2)),
             ).run(
-                state["signal"],
-                state["sampling_rate_hz"],
-                fault_frequencies=state.get("fault_frequencies"),
-                shaft_rate_hz=state.get("shaft_rate_hz"),
-                channel_name=state.get("channel_name", "ch0"),
-                operating_condition=state.get("operating_condition"),
+                state["signal"], state["sampling_rate_hz"],
+                fault_frequencies=state.get("fault_frequencies"), shaft_rate_hz=state.get("shaft_rate_hz"),
+                channel_name=state.get("channel_name", "ch0"), operating_condition=state.get("operating_condition"),
             )
             return {"bearing_analysis": result}
-
         return Workflow((Step("bearing_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
@@ -220,25 +199,16 @@ class ProcessPlugin:
     def workflow(self, request: DiagnosticRequest) -> Workflow:
         def analysis(state: dict[str, Any]) -> dict[str, Any]:
             result = ProcessDiagnosticPipeline(
-                variance_target=float(state.get("variance_target", 0.95)),
-                control_alpha=float(state.get("control_alpha", 0.99)),
-                maxlag=int(state.get("maxlag", 3)),
-                granger_alpha=float(state.get("granger_alpha", 0.05)),
-                onset_z_threshold=float(state.get("onset_z_threshold", 3.5)),
-                onset_persistence=int(state.get("onset_persistence", 3)),
-                diagnosis_threshold=float(state.get("diagnosis_threshold", 0.35)),
-                minimum_alarm_fraction=float(state.get("minimum_alarm_fraction", 0.05)),
+                variance_target=float(state.get("variance_target", 0.95)), control_alpha=float(state.get("control_alpha", 0.99)),
+                maxlag=int(state.get("maxlag", 3)), granger_alpha=float(state.get("granger_alpha", 0.05)),
+                onset_z_threshold=float(state.get("onset_z_threshold", 3.5)), onset_persistence=int(state.get("onset_persistence", 3)),
+                diagnosis_threshold=float(state.get("diagnosis_threshold", 0.35)), minimum_alarm_fraction=float(state.get("minimum_alarm_fraction", 0.05)),
                 use_knowledge_catalog=bool(state.get("use_knowledge_catalog", True)),
             ).run(
-                state["signal_matrix"],
-                state["normal_reference"],
-                state["channel_names"],
-                process_topology=state.get("process_topology"),
-                fault_catalog=state.get("fault_catalog"),
-                timestamps=state.get("timestamps"),
+                state["signal_matrix"], state["normal_reference"], state["channel_names"],
+                process_topology=state.get("process_topology"), fault_catalog=state.get("fault_catalog"), timestamps=state.get("timestamps"),
             )
             return {"process_analysis": result}
-
         return Workflow((Step("process_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> ProcessDecisionPolicy:
@@ -262,7 +232,6 @@ class BatteryPlugin:
             required = {key: state[key] for key in ("cell_voltage", "cell_temperature", "cell_ids", "timestamps")}
             context = {key: value for key, value in state.items() if key not in required}
             return {"battery_analysis": BatteryDiagnosticPipeline().run(**required, **context)}
-
         return Workflow((Step("battery_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
@@ -286,7 +255,6 @@ class TurbofanPlugin:
             required = {key: state[key] for key in ("signal_matrix", "channel_names", "cycle_index")}
             context = {key: value for key, value in state.items() if key not in required}
             return {"turbofan_analysis": TurbofanDiagnosticPipeline().run(**required, **context)}
-
         return Workflow((Step("turbofan_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
@@ -310,7 +278,6 @@ class TransformerPlugin:
             required = {key: state[key] for key in ("signal_matrix", "sampling_rate_hz", "sensor_positions")}
             context = {key: value for key, value in state.items() if key not in required}
             return {"transformer_analysis": TransformerDiagnosticPipeline().run(**required, **context)}
-
         return Workflow((Step("transformer_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
