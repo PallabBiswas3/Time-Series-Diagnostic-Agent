@@ -6,22 +6,13 @@ import json
 from pathlib import Path
 
 from tsdiag import diagnose
-from tsdiag.benchmarks import battery_nasa as benchmark_module
-from tsdiag.contracts import DiagnosticRequest
+from tsdiag.benchmarks.battery_nasa import run_nasa_battery_benchmark
+from tsdiag.contracts import DiagnosticRequest, RunContext
 from tsdiag.datasets.battery_nasa import download_nasa_battery_subset
 
 
-class _PublicBatteryPrognosticPipeline:
-    """Capacity-history benchmark adapter using the canonical diagnose boundary."""
-
-    def __init__(
-        self,
-        *,
-        nominal_capacity_ah=2.0,
-        eol_capacity_ah=1.4,
-        minimum_observations=20,
-        slope_window=20,
-    ):
+class PublicBatteryPrognosticPipeline:
+    def __init__(self, *, nominal_capacity_ah=2.0, eol_capacity_ah=1.4, minimum_observations=20, slope_window=20):
         self.config = {
             "nominal_capacity_ah": float(nominal_capacity_ah),
             "eol_capacity_ah": float(eol_capacity_ah),
@@ -34,12 +25,12 @@ class _PublicBatteryPrognosticPipeline:
             domain="battery",
             task="prognosis",
             policy_ref="capacity-prognosis-policy-v1",
-            inputs={
-                "cycle_index": cycle_index,
-                "capacity_ah": capacity_ah,
-                "battery_id": battery_id,
-                **self.config,
-            },
+            run_context=RunContext(
+                source="NASA Ames Prognostics Center of Excellence Battery Aging Dataset",
+                dataset_id="nasa-b0005-b0006-b0007-b0018",
+                protocol_id="battery-capacity-cutpoint-v2",
+            ),
+            inputs={"cycle_index": cycle_index, "capacity_ah": capacity_ah, "battery_id": battery_id, **self.config},
         ))
 
 
@@ -55,12 +46,8 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     download_nasa_battery_subset(data_dir)
 
-    # Ground-truth EOL/censoring stays entirely inside the benchmark evaluator.
-    benchmark_module.BatteryPrognosticPipeline = _PublicBatteryPrognosticPipeline
-    payload = benchmark_module.run_nasa_battery_benchmark(data_dir)
-    (out / "battery_nasa_benchmark.json").write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
+    payload = run_nasa_battery_benchmark(data_dir, pipeline_factory=PublicBatteryPrognosticPipeline)
+    (out / "battery_nasa_benchmark.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
     summary = payload["summary"]
     point = summary["point_error_metrics"]
