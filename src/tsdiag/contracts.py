@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Protocol
 
 
 class DataKind(str, Enum):
@@ -25,12 +25,7 @@ class TaskKind(str, Enum):
 
 @dataclass(frozen=True)
 class ToolContract:
-    """Declarative contract for one analysis step.
-
-    Contracts describe what a tool must consume/produce before a concrete
-    implementation is plugged in. This keeps domain pipelines inspectable and
-    allows deterministic/LLM/RL routers to share the same tool registry.
-    """
+    """Declarative contract for one analysis step."""
 
     name: str
     purpose: str
@@ -74,3 +69,35 @@ class ToolRegistry:
 
     def missing_for(self, pack: DomainPack) -> list[str]:
         return [name for name in pack.tool_names() if name not in self.implementations]
+
+
+@dataclass(frozen=True)
+class RunContext:
+    run_id: str | None = None
+    source: str | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DiagnosticRequest:
+    domain: str
+    task: str | None
+    inputs: Mapping[str, Any]
+    policy_ref: str | None = None
+    model_refs: Mapping[str, str] = field(default_factory=dict)
+    run_context: RunContext | None = None
+
+
+class DecisionPolicy(Protocol):
+    version: str
+
+    def decide(self, *args: Any, **kwargs: Any): ...
+
+
+class DomainPlugin(Protocol):
+    name: str
+    workflow_version: str
+
+    def validate(self, request: DiagnosticRequest) -> Mapping[str, Any]: ...
+    def workflow(self, request: DiagnosticRequest): ...
+    def policy(self, request: DiagnosticRequest) -> DecisionPolicy: ...
