@@ -6,6 +6,7 @@ from tsdiag.contracts import DiagnosticRequest
 from tsdiag.execution import ExecutionTrace, Step, Workflow, WorkflowExecutor
 from tsdiag.models import ToolTraceStep
 from tsdiag.pipeline import diagnose
+from tsdiag.registry import domain_registry, model_registry, policy_registry
 
 
 def test_execution_trace_preserves_order_and_named_lookup():
@@ -80,3 +81,50 @@ def test_structured_wind_request_uses_plugin_policy(monkeypatch):
     assert result.metadata["policy_version"] == "1.0"
     assert result.metadata["model_version"] == "wind-nbm-regime-v1"
     assert result.tool_trace.require("event_decision").evidence_ids == ["wind-event-evidence"]
+
+
+def test_all_six_domain_plugins_are_registered_after_diagnose():
+    # Any structured request initializes the full plugin registry. Invalid data
+    # is fine here because registration precedes validation.
+    diagnose(DiagnosticRequest(domain="bearing", task="fault_diagnosis", inputs={}))
+    assert domain_registry.names() == (
+        "battery", "bearing", "process", "transformer", "turbofan", "wind_scada"
+    )
+    for domain in domain_registry.names():
+        assert "default" in policy_registry.refs(domain)
+
+
+def test_versioned_policy_ref_and_model_version_provenance():
+    rng = np.random.default_rng(91)
+    voltage = 3.7 + rng.normal(scale=0.003, size=(40, 4))
+    temperature = 30 + rng.normal(scale=0.1, size=(40, 4))
+    model_registry.register(
+        "battery-health-test",
+        version="test-v1",
+        metadata={"purpose": "unit-test provenance only"},
+        replace=True,
+    )
+
+    result = diagnose(DiagnosticRequest(
+        domain="battery",
+        task="anomaly_localization",
+        policy_ref="compat-1.0",
+        model_refs={"health_model": "battery-health-test"},
+        inputs={
+            "cell_voltage": voltage,
+            "cell_temperature": temperature,
+            "cell_ids": ["a", "b", "c", "d"],
+            "timestamps": np.arange(40),
+        },
+    ))
+
+    assert result.decision in {"diagnose", "monitor"}
+    assert result.metadata["workflow_version"] == "compat-1.0"
+    assert result.metadata["policy_version"] == "compat-1.0"
+    assert result.metadata["policy_ref"] == "compat-1.0"
+    assert result.metadata["resolved_model_versions"] == {"health_model": "test-v1"}
+    assert result.metadata["compatibility_adapter"] is True
+    assert result.metadata["outer_workflow_trace"][0]["step"] == "battery_analysis"
+    # Preserve detailed inner execution history rather than replacing it with
+    # the single compatibility workflow step.
+    assert len(result.tool_trace) > 1
