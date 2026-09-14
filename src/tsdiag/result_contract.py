@@ -19,10 +19,18 @@ def standardize_result(
     verification and prognosis. This function only normalizes the public result
     envelope so downstream evaluation, orchestration and agent policies can rely
     on the same metadata/evidence structure for every domain.
+
+    ``uncertainty = 1-confidence`` is retained only as an explicit compatibility
+    fallback for legacy runners. New plugins should set
+    ``allow_confidence_complement_uncertainty=False`` and provide a calibrated
+    estimate when one exists.
     """
     result.schema_version = RESULT_CONTRACT_VERSION
 
-    if result.uncertainty is None:
+    legacy_uncertainty_fallback = bool(
+        result.metadata.get("allow_confidence_complement_uncertainty", True)
+    )
+    if result.uncertainty is None and legacy_uncertainty_fallback:
         result.uncertainty = max(0.0, min(1.0, 1.0 - float(result.confidence)))
 
     if result.decision == "abstain":
