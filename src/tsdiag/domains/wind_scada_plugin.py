@@ -101,8 +101,6 @@ class WindScadaDecisionPolicy:
             evidence=[evidence],
             verification=verification,
             confidence=confidence,
-            # Deliberately not set to 1-confidence: this workflow does not yet
-            # expose a calibrated uncertainty estimate.
             uncertainty=None,
             abstained=mapped_decision == "abstain",
             abstain_reason=decision.reason if mapped_decision == "abstain" else None,
@@ -116,6 +114,7 @@ class WindScadaDecisionPolicy:
                 "workflow_version": WindScadaPlugin.workflow_version,
                 "policy_version": self.version,
                 "model_version": "wind-nbm-regime-v1",
+                "allow_confidence_complement_uncertainty": False,
                 "wind_artifacts": artifacts,
                 "alarm_mask": raw.alarm_mask,
                 "anomaly_scores": raw.anomaly_scores,
