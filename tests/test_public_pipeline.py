@@ -90,7 +90,7 @@ def test_turbofan_pipeline_returns_health_and_prognosis():
     assert [step.tool for step in result.tool_trace[0].children] == list(get_domain_pack("turbofan").tool_names())
 
 
-def test_transformer_pipeline_completes_and_abstains_without_classifier_when_abnormal():
+def test_transformer_pipeline_uses_decomposed_workflow():
     fs = 4000.0
     t = np.arange(0, 1, 1/fs)
     base = np.sin(2*np.pi*300*t)
@@ -100,9 +100,10 @@ def test_transformer_pipeline_completes_and_abstains_without_classifier_when_abn
     result = diagnose("transformer", signal_matrix=signal, sampling_rate_hz=fs, sensor_positions=["tank_a", "tank_b"])
     assert result.domain == "transformer"
     assert result.decision in {"monitor", "abstain"}
-    assert result.tool_trace[0].tool == "transformer_analysis"
-    assert result.tool_trace[0].children[-1].tool == "transformer_decision"
-    assert [step.tool for step in result.tool_trace[0].children] == list(get_domain_pack("transformer").tool_names())
+    assert [step.tool for step in result.tool_trace] == list(get_domain_pack("transformer").tool_names())
+    assert result.tool_trace[-1].tool == "transformer_decision"
+    assert result.metadata["workflow_version"] == "2.0"
+    assert result.metadata["policy_version"] == "transformer-policy-v2"
 
 
 def test_dispatcher_exposes_current_version():
