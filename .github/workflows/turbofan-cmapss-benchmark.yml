@@ -69,11 +69,15 @@ jobs:
           from tsdiag.datasets.cmapss import CMAPSS_SUBSETS, validate_cmapss_subset
           summaries = [validate_cmapss_subset('data/cmapss', subset) for subset in CMAPSS_SUBSETS]
           print(json.dumps(summaries, indent=2))
+          # Counts are locked to the current official NASA archive bytes. Note:
+          # the Open Data metadata page currently lists FD004 as 248 train / 249
+          # test, while the downloadable archive contains 249 train / 248 test
+          # and exactly 248 FD004 RUL targets.
           expected = {
               'FD001': (100, 100),
               'FD002': (260, 259),
               'FD003': (100, 100),
-              'FD004': (248, 249),
+              'FD004': (249, 248),
           }
           for row in summaries:
               train_expected, test_expected = expected[row['subset']]
@@ -105,8 +109,8 @@ jobs:
           if payload['failures']:
               raise SystemExit(f"Benchmark failures: {payload['failures']}")
           summary = payload['summary']
-          if summary['case_count'] != 708:
-              raise SystemExit(f"Expected 708 NASA test engines, got {summary['case_count']}")
+          if summary['case_count'] != 707:
+              raise SystemExit(f"Expected 707 test engines in the current NASA archive, got {summary['case_count']}")
           if summary['coverage'] is None or summary['coverage'] < 0.80:
               raise SystemExit(f"Coverage gate failed: {summary['coverage']}")
           if summary['rmse_cycles'] is None or summary['rmse_cycles'] > 75.0:
