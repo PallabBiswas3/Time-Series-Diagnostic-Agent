@@ -7,6 +7,7 @@ from .turbofan import TURBOFAN_PACK
 from .transformer import TRANSFORMER_PACK
 from .bearing_runner import BearingDiagnosticPipeline
 from .runners import BatteryDiagnosticPipeline, TransformerDiagnosticPipeline, TurbofanDiagnosticPipeline, WindScadaDiagnosticPipeline
+from .domain_steps import default_domain_tool_registry
 
 DOMAIN_PACKS = {
     pack.key: pack
@@ -44,4 +45,5 @@ __all__ = [
     "BatteryDiagnosticPipeline",
     "TurbofanDiagnosticPipeline",
     "TransformerDiagnosticPipeline",
+    "default_domain_tool_registry",
 ]

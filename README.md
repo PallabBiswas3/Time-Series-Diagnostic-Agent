@@ -28,7 +28,7 @@ print(result.decision, result.detection, result.localization)
 | `turbofan` | sensor trend screening, health index and linear RUL baseline | trained RUL model |
 | `transformer` | wavelet denoising, correlation weighting and multisensor anomaly evidence | trained fault classifier for fault labels |
 
-The pipeline returns `abstain` with a reason when metadata is missing or evidence cannot support the requested label. See [`examples/run_full_pipeline.py`](examples/run_full_pipeline.py) for all six calls. `IndustrialDiagnosticOrchestrator` remains available as the legacy specialist-agent API.
+The pipeline returns `abstain` with a reason when metadata is missing, a registered step fails, or evidence cannot support the requested label. Every executed step records its status and duration. Results support JSON-safe `to_dict()` and `to_json()` serialization, while `get_input_schema(domain)` describes public inputs. See [`examples/run_full_pipeline.py`](examples/run_full_pipeline.py) for normal and fault scenarios across all six domains. `IndustrialDiagnosticOrchestrator` remains available as the legacy specialist-agent API.
 
 This project is designed as a **specialist-agent platform**, not a single bearing classifier. The long-term goal is to combine deterministic signal analysis, statistical monitoring, causal/root-cause reasoning, learned models, multimodal evidence, physics/manual verification, prognostics, and later sovereign industrial orchestration.
 

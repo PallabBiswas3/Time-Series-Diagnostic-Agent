@@ -2,7 +2,25 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
+import json
 import numpy as np
+
+
+def json_safe(value: Any) -> Any:
+    """Recursively convert diagnostic payloads to JSON-native values."""
+    if isinstance(value, np.ndarray):
+        return [json_safe(row) for row in value.tolist()]
+    if isinstance(value, np.generic):
+        return json_safe(value.item())
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return repr(value)
 
 
 @dataclass
@@ -217,7 +235,11 @@ class DiagnosticResult:
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
-        return asdict(self)
+        return json_safe(asdict(self))
+
+    def to_json(self, **kwargs: Any) -> str:
+        """Serialize the validated result without requiring a NumPy encoder."""
+        return json.dumps(self.to_dict(), **kwargs)
 
     @classmethod
     def from_legacy_report(

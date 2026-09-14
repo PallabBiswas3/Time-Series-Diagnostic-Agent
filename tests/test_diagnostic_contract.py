@@ -1,4 +1,6 @@
 import pytest
+import json
+import numpy as np
 
 from tsdiag.models import (
     AgentResult,
@@ -130,3 +132,13 @@ def test_legacy_report_adapter_preserves_evidence_and_recommendations():
         "signal_processing",
         "bearing_diagnostic",
     ]
+
+
+def test_result_serialization_converts_numpy_values():
+    result = DiagnosticResult(
+        domain="process", task="condition_monitoring", decision="monitor",
+        detection=DetectionResult(abnormal=False, score=np.float64(0.1)),
+        confidence=np.float64(0.8), metadata={"array": np.array([1.0, 2.0])},
+    )
+    payload = json.loads(result.to_json())
+    assert payload["metadata"]["array"] == [1.0, 2.0]

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from time import perf_counter
 
 import numpy as np
+from ..execution import StepExecutionError
+from ..models import ToolTraceStep
 
 from ..tools import (
     causal_graph_filter,
@@ -32,6 +35,7 @@ class ProcessDiagnosticResult:
     abstain_reason: str | None
     tool_trace: list[str]
     artifacts: dict[str, Any]
+    timings: dict[str, float] | None = None
 
 
 class ProcessDiagnosticPipeline:
@@ -52,6 +56,7 @@ class ProcessDiagnosticPipeline:
         onset_z_threshold: float = 3.5,
         onset_persistence: int = 3,
         diagnosis_threshold: float = 0.35,
+        minimum_alarm_fraction: float = 0.05,
         use_knowledge_catalog: bool = True,
     ):
         self.variance_target = variance_target
@@ -61,6 +66,7 @@ class ProcessDiagnosticPipeline:
         self.onset_z_threshold = onset_z_threshold
         self.onset_persistence = onset_persistence
         self.diagnosis_threshold = diagnosis_threshold
+        self.minimum_alarm_fraction = minimum_alarm_fraction
         self.use_knowledge_catalog = use_knowledge_catalog
 
     @staticmethod
@@ -91,6 +97,19 @@ class ProcessDiagnosticPipeline:
         names = list(channel_names)
         trace: list[str] = []
         artifacts: dict[str, Any] = {}
+        timings: dict[str, float] = {}
+
+        def timed(name, fn, *args, **kwargs):
+            started = perf_counter()
+            try:
+                output = fn(*args, **kwargs)
+            except Exception as exc:
+                timings[name] = perf_counter() - started
+                steps = [ToolTraceStep(row, duration_seconds=timings.get(row, 0.0)) for row in trace]
+                steps.append(ToolTraceStep(name, status="error", duration_seconds=timings[name], details={"error_type": type(exc).__name__, "message": str(exc)}))
+                raise StepExecutionError(name, str(exc), steps) from exc
+            timings[name] = perf_counter() - started
+            return output
 
         if x.ndim == 1:
             x = x[:, None]
@@ -101,11 +120,11 @@ class ProcessDiagnosticPipeline:
         if len(names) != x.shape[1]:
             raise ValueError("channel_names length mismatch")
 
-        standardized = standardize_against_normal(x, ref)
+        standardized = timed("standardize_against_normal", standardize_against_normal, x, ref)
         artifacts["standardization"] = standardized
         trace.append("standardize_against_normal")
 
-        pca = pca_monitoring(
+        pca = timed("pca_monitoring", pca_monitoring,
             standardized["standardized_signal"],
             standardized["standardized_reference"],
             variance_target=self.variance_target,
@@ -115,7 +134,9 @@ class ProcessDiagnosticPipeline:
         trace.append("pca_monitoring")
 
         alarm_mask = np.asarray(pca["alarm_mask"], dtype=bool)
-        fault_detected = bool(np.any(alarm_mask))
+        alarm_fraction = float(np.mean(alarm_mask))
+        artifacts["detection"] = {"alarm_fraction": alarm_fraction, "minimum_alarm_fraction": self.minimum_alarm_fraction}
+        fault_detected = alarm_fraction >= self.minimum_alarm_fraction
         if not fault_detected:
             return ProcessDiagnosticResult(
                 fault_detected=False,
@@ -127,9 +148,10 @@ class ProcessDiagnosticPipeline:
                 abstain_reason=None,
                 tool_trace=trace,
                 artifacts=artifacts,
+                timings=timings,
             )
 
-        contributions = contribution_analysis(
+        contributions = timed("contribution_analysis", contribution_analysis,
             standardized["standardized_signal"],
             pca["pca_state"],
             alarm_mask,
@@ -137,7 +159,7 @@ class ProcessDiagnosticPipeline:
         artifacts["contribution_analysis"] = contributions
         trace.append("contribution_analysis")
 
-        shift = pre_post_shift_evidence(
+        shift = timed("pre_post_shift_evidence", pre_post_shift_evidence,
             standardized["standardized_signal"],
             names,
             alarm_mask=alarm_mask,
@@ -145,7 +167,7 @@ class ProcessDiagnosticPipeline:
         artifacts["pre_post_shift_evidence"] = shift
         trace.append("pre_post_shift_evidence")
 
-        type_evidence = temporal_fault_type_evidence(
+        type_evidence = timed("temporal_fault_type_evidence", temporal_fault_type_evidence,
             standardized["standardized_signal"],
             names,
             alarm_mask=alarm_mask,
@@ -153,7 +175,7 @@ class ProcessDiagnosticPipeline:
         artifacts["temporal_fault_type_evidence"] = type_evidence
         trace.append("temporal_fault_type_evidence")
 
-        stationarity = stationarity_analysis(standardized["standardized_signal"])
+        stationarity = timed("stationarity_analysis", stationarity_analysis, standardized["standardized_signal"])
         artifacts["stationarity_analysis"] = stationarity
         trace.append("stationarity_analysis")
 
@@ -162,7 +184,7 @@ class ProcessDiagnosticPipeline:
         )
         artifacts["causal_preprocessing"] = {"differenced_channels": differenced_channels}
 
-        granger = granger_causality(
+        granger = timed("granger_causality", granger_causality,
             causal_input,
             names,
             maxlag=self.maxlag,
@@ -171,7 +193,7 @@ class ProcessDiagnosticPipeline:
         artifacts["granger_causality"] = granger
         trace.append("granger_causality")
 
-        filtered = causal_graph_filter(
+        filtered = timed("causal_graph_filter", causal_graph_filter,
             granger["directed_edges"],
             process_topology=process_topology,
             p_value_threshold=self.granger_alpha,
@@ -179,7 +201,7 @@ class ProcessDiagnosticPipeline:
         artifacts["causal_graph_filter"] = filtered
         trace.append("causal_graph_filter")
 
-        onset = fault_onset_timing(
+        onset = timed("fault_onset_timing", fault_onset_timing,
             standardized["standardized_signal"],
             alarm_mask,
             names,
@@ -190,7 +212,7 @@ class ProcessDiagnosticPipeline:
         artifacts["fault_onset_timing"] = onset
         trace.append("fault_onset_timing")
 
-        ranking = root_cause_rank_enhanced(
+        ranking = timed("root_cause_rank_enhanced", root_cause_rank_enhanced,
             contributions["suspect_variables"],
             filtered["filtered_causal_graph"],
             onset["onset_order"],
@@ -203,7 +225,7 @@ class ProcessDiagnosticPipeline:
 
         contribution_scores = {names[i]: float(v) for i, v in enumerate(contributions["variable_contributions"])}
         if self.use_knowledge_catalog and fault_catalog and isinstance(fault_catalog, dict) and "faults" in fault_catalog:
-            kg = knowledge_guided_root_cause_decision(
+            kg = timed("knowledge_guided_root_cause_decision", knowledge_guided_root_cause_decision,
                 ranking["root_cause_ranking"],
                 fault_catalog,
                 shift_scores=shift["shift_scores"],
@@ -224,7 +246,7 @@ class ProcessDiagnosticPipeline:
                 "propagation_paths": ranking["propagation_paths"],
             }
         else:
-            diagnosis = process_diagnosis(
+            diagnosis = timed("process_diagnosis", process_diagnosis,
                 ranking["root_cause_ranking"],
                 ranking["propagation_paths"],
                 fault_catalog=fault_catalog,
@@ -243,4 +265,5 @@ class ProcessDiagnosticPipeline:
             abstain_reason=diagnosis["abstain_reason"],
             tool_trace=trace,
             artifacts=artifacts,
+            timings=timings,
         )

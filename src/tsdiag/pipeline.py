@@ -13,6 +13,7 @@ from .domains.runners import (
     TurbofanDiagnosticPipeline,
     WindScadaDiagnosticPipeline,
 )
+from .execution import DomainInputSchema, InputField, StepExecutionError
 from .models import (
     DetectionResult,
     DiagnosticHypothesis,
@@ -24,8 +25,24 @@ from .models import (
 
 PIPELINE_VERSION = "1.0.0"
 
+DOMAIN_INPUT_SCHEMAS = {
+    "bearing": DomainInputSchema("bearing", (InputField("signal"), InputField("sampling_rate_hz"), InputField("fault_frequencies", False))),
+    "process": DomainInputSchema("process", (InputField("signal_matrix"), InputField("normal_reference"), InputField("channel_names"), InputField("sampling_rate_hz"))),
+    "wind_scada": DomainInputSchema("wind_scada", (InputField("signal_matrix"), InputField("channel_names"), InputField("timestamps"), InputField("normal_reference", False))),
+    "battery": DomainInputSchema("battery", (InputField("cell_voltage"), InputField("cell_temperature"), InputField("cell_ids"), InputField("timestamps"))),
+    "turbofan": DomainInputSchema("turbofan", (InputField("signal_matrix"), InputField("channel_names"), InputField("cycle_index"))),
+    "transformer": DomainInputSchema("transformer", (InputField("signal_matrix"), InputField("sampling_rate_hz"), InputField("sensor_positions"), InputField("trained_image_model", False))),
+}
 
-def _abstain(domain: str, task: str, reason: str) -> DiagnosticResult:
+
+def get_input_schema(domain: str) -> DomainInputSchema:
+    try:
+        return DOMAIN_INPUT_SCHEMAS[domain]
+    except KeyError as exc:
+        raise KeyError(f"Unknown domain {domain!r}. Available: {sorted(DOMAIN_INPUT_SCHEMAS)}") from exc
+
+
+def _abstain(domain: str, task: str, reason: str, trace: list[ToolTraceStep] | None = None) -> DiagnosticResult:
     result = DiagnosticResult(
         domain=domain,
         task=task,
@@ -35,7 +52,7 @@ def _abstain(domain: str, task: str, reason: str) -> DiagnosticResult:
         uncertainty=1.0,
         abstained=True,
         abstain_reason=reason,
-        tool_trace=[ToolTraceStep("input_validation", status="warning", details={"reason": reason})],
+        tool_trace=trace or [ToolTraceStep("input_validation", status="warning", details={"reason": reason})],
         metadata={"pipeline_version": PIPELINE_VERSION},
     )
     result.validate()
@@ -77,7 +94,7 @@ def _process_result(raw: ProcessDiagnosticResult) -> DiagnosticResult:
         hypotheses=hypotheses, evidence=evidence, confidence=confidence,
         uncertainty=1.0-confidence, abstained=abstained, abstain_reason=raw.abstain_reason,
         recommended_actions=["Verify the proposed root cause against process topology and operating history."] if raw.root_cause else [],
-        tool_trace=[ToolTraceStep(name, evidence_ids=["process-diagnostic-evidence"] if name == "process_diagnosis" and evidence else []) for name in raw.tool_trace],
+        tool_trace=[ToolTraceStep(name, duration_seconds=(raw.timings or {}).get(name, 0.0), evidence_ids=["process-diagnostic-evidence"] if name == "process_diagnosis" and evidence else []) for name in raw.tool_trace],
         metadata={"pipeline_version": PIPELINE_VERSION, "artifacts": raw.artifacts},
     )
     result.validate()
@@ -110,6 +127,10 @@ class DiagnosticPipeline:
         if missing:
             return _abstain(domain, default_task, f"Missing required metadata: {', '.join(missing)}")
         try:
+            schema_values = dict(values)
+            if domain == "bearing" and schema_values.get("signal") is None:
+                schema_values["signal"] = schema_values.get("signal_matrix")
+            get_input_schema(domain).validate(schema_values)
             if domain == "bearing":
                 signal = values.get("signal", values.get("signal_matrix"))
                 if signal is None:
@@ -129,7 +150,9 @@ class DiagnosticPipeline:
                 if values.get("signal_matrix") is None or values.get("normal_reference") is None:
                     return _abstain(domain, default_task, "Process diagnosis requires signal_matrix and normal_reference")
                 raw = ProcessDiagnosticPipeline(
-                    maxlag=int(values.get("maxlag", 3)), diagnosis_threshold=float(values.get("diagnosis_threshold", 0.35))
+                    maxlag=int(values.get("maxlag", 3)),
+                    diagnosis_threshold=float(values.get("diagnosis_threshold", 0.35)),
+                    minimum_alarm_fraction=float(values.get("minimum_alarm_fraction", 0.05)),
                 ).run(values["signal_matrix"], values["normal_reference"], values["channel_names"],
                       process_topology=values.get("process_topology"), fault_catalog=values.get("fault_catalog"),
                       timestamps=values.get("timestamps"))
@@ -141,6 +164,8 @@ class DiagnosticPipeline:
             if domain == "turbofan":
                 return _with_task(TurbofanDiagnosticPipeline().run(**values), task)
             return _with_task(TransformerDiagnosticPipeline().run(**values), task)
+        except StepExecutionError as exc:
+            return _abstain(domain, default_task, f"Pipeline step failed: {exc}", exc.trace)
         except (TypeError, ValueError) as exc:
             return _abstain(domain, default_task, f"Input validation failed: {exc}")
         except Exception as exc:

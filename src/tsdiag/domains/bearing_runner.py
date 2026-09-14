@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from time import perf_counter
 
 import numpy as np
 
@@ -13,6 +14,7 @@ from ..models import (
     ToolTraceStep,
     VerificationResult,
 )
+from ..execution import StepExecutionError
 from ..tools.bearing import bearing_evidence_fusion, bearing_frequency_match
 from ..tools.signal import (
     bandpass_filter,
@@ -31,6 +33,17 @@ _FAULT_COMPONENTS = {
     "BSF": "rolling_element",
     "FTF": "cage",
 }
+
+
+def _timed(trace, name, fn, *args, **kwargs):
+    started = perf_counter()
+    try:
+        output = fn(*args, **kwargs)
+    except Exception as exc:
+        trace.append(ToolTraceStep(name, status="error", duration_seconds=perf_counter()-started, details={"error_type": type(exc).__name__, "message": str(exc)}))
+        raise StepExecutionError(name, str(exc), list(trace)) from exc
+    trace.append(ToolTraceStep(name, duration_seconds=perf_counter()-started))
+    return output
 
 
 class BearingDiagnosticPipeline:
@@ -71,8 +84,8 @@ class BearingDiagnosticPipeline:
         evidence: list[Evidence] = []
         trace: list[ToolTraceStep] = []
 
-        quality = signal_integrity(x, fs)
-        trace.append(ToolTraceStep(tool="signal_integrity", outputs_summary={"quality_flags": quality["quality_flags"]}))
+        quality = _timed(trace, "signal_integrity", signal_integrity, x, fs)
+        trace[-1].outputs_summary={"quality_flags": quality["quality_flags"]}
         fatal_quality = {"nan_or_inf", "too_short", "invalid_sampling_rate", "no_finite_samples"}
         if fatal_quality.intersection(quality["quality_flags"]):
             result = DiagnosticResult(
@@ -90,7 +103,7 @@ class BearingDiagnosticPipeline:
             result.validate()
             return result
 
-        features = time_domain_features(x)
+        features = _timed(trace, "time_domain_features", time_domain_features, x)
         ev_features = Evidence(
             source="time_domain_features",
             statement=(
@@ -104,9 +117,9 @@ class BearingDiagnosticPipeline:
             details=features,
         )
         evidence.append(ev_features)
-        trace.append(ToolTraceStep(tool="time_domain_features", evidence_ids=[ev_features.evidence_id]))
+        trace[-1].evidence_ids.append(ev_features.evidence_id)
 
-        psd = welch_psd(x, fs)
+        psd = _timed(trace, "welch_psd", welch_psd, x, fs)
         ev_psd = Evidence(
             source="welch_psd",
             statement=f"Computed Welch PSD with {len(psd['dominant_peaks'])} dominant peaks.",
@@ -117,9 +130,9 @@ class BearingDiagnosticPipeline:
             details={"dominant_peaks": psd["dominant_peaks"]},
         )
         evidence.append(ev_psd)
-        trace.append(ToolTraceStep(tool="welch_psd", evidence_ids=[ev_psd.evidence_id]))
+        trace[-1].evidence_ids.append(ev_psd.evidence_id)
 
-        sk = spectral_kurtosis(x, fs)
+        sk = _timed(trace, "spectral_kurtosis", spectral_kurtosis, x, fs)
         band = sk.get("recommended_band_hz")
         if band is None:
             result = DiagnosticResult(
@@ -132,7 +145,7 @@ class BearingDiagnosticPipeline:
                 uncertainty=0.9,
                 abstained=True,
                 abstain_reason="No valid resonance band could be selected from spectral kurtosis.",
-                tool_trace=trace + [ToolTraceStep(tool="spectral_kurtosis", status="warning")],
+                tool_trace=trace,
                 metadata={"quality": quality, "time_features": features},
             )
             result.validate()
@@ -148,16 +161,12 @@ class BearingDiagnosticPipeline:
             details=sk,
         )
         evidence.append(ev_band)
-        trace.append(ToolTraceStep(tool="spectral_kurtosis", evidence_ids=[ev_band.evidence_id]))
+        trace[-1].evidence_ids.append(ev_band.evidence_id)
 
-        filtered = bandpass_filter(x, fs, band)
-        envelope = hilbert_envelope(filtered["filtered_signal"])
-        env_spec = envelope_spectrum(envelope["envelope"], fs)
-        trace.extend([
-            ToolTraceStep(tool="bandpass_filter", outputs_summary=filtered["filter_metadata"]),
-            ToolTraceStep(tool="hilbert_envelope"),
-            ToolTraceStep(tool="envelope_spectrum"),
-        ])
+        filtered = _timed(trace, "bandpass_filter", bandpass_filter, x, fs, band)
+        trace[-1].outputs_summary=filtered["filter_metadata"]
+        envelope = _timed(trace, "hilbert_envelope", hilbert_envelope, filtered["filtered_signal"])
+        env_spec = _timed(trace, "envelope_spectrum", envelope_spectrum, envelope["envelope"], fs)
 
         if not fault_frequencies:
             result = DiagnosticResult(
@@ -181,16 +190,14 @@ class BearingDiagnosticPipeline:
             result.validate()
             return result
 
-        match = bearing_frequency_match(
+        match = _timed(trace, "bearing_frequency_match", bearing_frequency_match,
             env_spec["frequency_hz"],
             env_spec["envelope_power"],
             fault_frequencies,
             shaft_rate_hz=shaft_rate_hz,
         )
-        trace.append(ToolTraceStep(tool="bearing_frequency_match"))
-
         ranking = match["fault_ranking"]
-        fusion = bearing_evidence_fusion(
+        fusion = _timed(trace, "bearing_evidence_fusion", bearing_evidence_fusion,
             features,
             ranking,
             transient_band=band,
@@ -295,7 +302,7 @@ class BearingDiagnosticPipeline:
                 if not abstained
                 else ["Collect another clean vibration window and verify bearing geometry/speed metadata."]
             ),
-            tool_trace=trace + [ToolTraceStep(tool="bearing_evidence_fusion")],
+            tool_trace=trace,
             metadata={
                 "quality": quality,
                 "time_features": features,

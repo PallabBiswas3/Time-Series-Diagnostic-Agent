@@ -1,6 +1,8 @@
 import numpy as np
+import json
 
 from tsdiag import PIPELINE_VERSION, DiagnosticPipeline, DiagnosticResult, diagnose, get_domain_pack
+from tsdiag.domains import default_domain_tool_registry
 
 
 def test_missing_required_metadata_returns_structured_abstention():
@@ -19,6 +21,7 @@ def test_bearing_runs_through_public_pipeline():
     assert result.domain == "bearing"
     assert result.decision in {"diagnose", "abstain"}
     assert result.tool_trace
+    assert all(step.duration_seconds is not None for step in result.tool_trace)
 
 
 def test_process_adapter_returns_cross_domain_contract():
@@ -30,6 +33,7 @@ def test_process_adapter_returns_cross_domain_contract():
     assert isinstance(result, DiagnosticResult)
     assert result.domain == "process"
     assert result.metadata["pipeline_version"] == PIPELINE_VERSION
+    assert all(step.duration_seconds is not None for step in result.tool_trace)
 
 
 def test_wind_scada_pipeline_localizes_persistent_shift():
@@ -90,3 +94,29 @@ def test_unsupported_domain_task_returns_structured_abstention():
     result = diagnose("battery", task="remaining_useful_life", cell_ids=["c1"], timestamps=np.arange(10))
     assert result.decision == "abstain"
     assert "Unsupported task" in result.abstain_reason
+
+
+def test_every_domain_contract_has_a_registered_callable():
+    registry = default_domain_tool_registry()
+    for domain in ("bearing", "process", "wind_scada", "battery", "turbofan", "transformer"):
+        assert set(get_domain_pack(domain).tool_names()) <= set(registry.names(domain))
+
+
+def test_new_domain_trace_steps_are_timed_and_json_safe():
+    rng = np.random.default_rng(30)
+    result = diagnose("battery", cell_voltage=3.7+rng.normal(scale=.003,size=(40,4)),
+                      cell_temperature=30+rng.normal(scale=.1,size=(40,4)),
+                      cell_ids=["a","b","c","d"], timestamps=np.arange(40))
+    assert all(step.duration_seconds is not None and step.duration_seconds >= 0 for step in result.tool_trace)
+    json.loads(result.to_json())
+
+
+def test_step_failure_is_isolated_with_failed_step_trace():
+    def broken_model(**kwargs):
+        raise RuntimeError("model unavailable")
+    result = diagnose("wind_scada", signal_matrix=np.ones((40,2)), channel_names=["a","b"],
+                      timestamps=np.arange(40), physics_model=broken_model)
+    assert result.decision == "abstain"
+    assert result.tool_trace[-1].tool == "normal_behavior_model"
+    assert result.tool_trace[-1].status == "error"
+    assert result.tool_trace[-1].duration_seconds is not None
