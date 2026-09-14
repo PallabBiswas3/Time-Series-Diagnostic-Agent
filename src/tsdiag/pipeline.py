@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 
+from .contracts import DiagnosticRequest
 from .domains import DOMAIN_PACKS
 from .domains.bearing_runner import BearingDiagnosticPipeline
 from .domains.process_runner import ProcessDiagnosticPipeline, ProcessDiagnosticResult
@@ -13,7 +14,7 @@ from .domains.runners import (
     TurbofanDiagnosticPipeline,
     WindScadaDiagnosticPipeline,
 )
-from .execution import DomainInputSchema, InputField, StepExecutionError
+from .execution import DomainInputSchema, InputField, StepExecutionError, WorkflowExecutor
 from .models import (
     DetectionResult,
     DiagnosticHypothesis,
@@ -22,9 +23,10 @@ from .models import (
     LocalizationResult,
     ToolTraceStep,
 )
+from .registry import domain_registry
 from .result_contract import standardize_result
 
-PIPELINE_VERSION = "1.0.0"
+PIPELINE_VERSION = "1.1.0"
 
 DOMAIN_INPUT_SCHEMAS = {
     "bearing": DomainInputSchema("bearing", (InputField("signal"), InputField("sampling_rate_hz"), InputField("fault_frequencies", False))),
@@ -104,6 +106,42 @@ def _with_task(result: DiagnosticResult, task: str | None) -> DiagnosticResult:
     return standardize_result(result, pipeline_version=PIPELINE_VERSION)
 
 
+def _ensure_plugins() -> None:
+    if domain_registry.get("wind_scada") is None:
+        from .domains.wind_scada_plugin import WindScadaPlugin
+        domain_registry.register(WindScadaPlugin())
+
+
+def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
+    _ensure_plugins()
+    plugin = domain_registry.resolve(request.domain)
+    task = str(request.task or "diagnosis")
+    try:
+        validated = dict(plugin.validate(request))
+        execution, trace = WorkflowExecutor().run(plugin.workflow(request), validated)
+        result = plugin.policy(request).decide(execution, trace)
+        if request.task is not None:
+            result.task = request.task
+        result.metadata.setdefault("pipeline_version", PIPELINE_VERSION)
+        if request.run_context is not None:
+            result.metadata.setdefault("run_context", {
+                "run_id": request.run_context.run_id,
+                "source": request.run_context.source,
+                "metadata": dict(request.run_context.metadata),
+            })
+        if request.model_refs:
+            result.metadata.setdefault("model_refs", dict(request.model_refs))
+        if request.policy_ref:
+            result.metadata.setdefault("policy_ref", request.policy_ref)
+        return standardize_result(result, pipeline_version=PIPELINE_VERSION)
+    except StepExecutionError as exc:
+        return _abstain(request.domain, task, f"Pipeline step failed: {exc}", exc.trace)
+    except (TypeError, ValueError, KeyError) as exc:
+        return _abstain(request.domain, task, f"Input validation failed: {exc}")
+    except Exception as exc:
+        return _abstain(request.domain, task, f"Pipeline execution failed in {request.domain}: {exc}")
+
+
 class DiagnosticPipeline:
     """Stable public dispatcher for all supported industrial domain pipelines."""
 
@@ -168,6 +206,16 @@ class DiagnosticPipeline:
             return _abstain(domain, default_task, f"Pipeline execution failed in {domain}: {exc}")
 
 
-def diagnose(domain: str, *, task: str | None = None, metadata: dict[str, Any] | None = None, **inputs) -> DiagnosticResult:
-    """Run one domain pipeline and always return the cross-domain result contract."""
-    return DiagnosticPipeline().run(domain, task=task, metadata=metadata, **inputs)
+def diagnose(
+    request_or_domain: DiagnosticRequest | str,
+    *,
+    task: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    **inputs,
+) -> DiagnosticResult:
+    """Run a structured plugin request or the backwards-compatible legacy API."""
+    if isinstance(request_or_domain, DiagnosticRequest):
+        if task is not None or metadata is not None or inputs:
+            raise TypeError("task/metadata/inputs cannot be combined with DiagnosticRequest")
+        return _diagnose_request(request_or_domain)
+    return DiagnosticPipeline().run(str(request_or_domain), task=task, metadata=metadata, **inputs)
