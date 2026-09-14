@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
+from typing import Callable
 
 import numpy as np
 
@@ -45,18 +46,15 @@ def summarize_battery_cases(cases: list[BatteryPrognosisCase]) -> dict:
     exact_intervals = [r for r in exact_pred if r.exact_interval_contains_eol is not None]
     exact_interval_hits = [r for r in exact_intervals if r.exact_interval_contains_eol is True]
     exact_widths = np.asarray([r.interval_width_cycles for r in exact_intervals if r.interval_width_cycles is not None], dtype=float)
-
     censored = [r for r in cases if not r.eol_observed]
     censored_pred = [r for r in censored if _predicted(r)]
     compatible = [r for r in censored_pred if r.censoring_compatible is True]
     violations = np.asarray([r.censoring_violation_cycles for r in censored_pred if r.censoring_violation_cycles is not None], dtype=float)
     censored_widths = np.asarray([r.interval_width_cycles for r in censored_pred if r.interval_width_cycles is not None], dtype=float)
-
     return {
         "case_count": len(cases),
         "point_error_metrics": {
-            "case_count": len(exact),
-            "covered_case_count": len(exact_pred),
+            "case_count": len(exact), "covered_case_count": len(exact_pred),
             "coverage": None if not exact else len(exact_pred) / len(exact),
             "mae_cycles": None if not errors.size else float(np.mean(errors)),
             "rmse_cycles": None if not errors.size else float(np.sqrt(np.mean(errors**2))),
@@ -68,8 +66,7 @@ def summarize_battery_cases(cases: list[BatteryPrognosisCase]) -> dict:
             "median_width_cycles": None if not exact_widths.size else float(np.median(exact_widths)),
         },
         "censoring_metrics": {
-            "case_count": len(censored),
-            "covered_case_count": len(censored_pred),
+            "case_count": len(censored), "covered_case_count": len(censored_pred),
             "coverage": None if not censored else len(censored_pred) / len(censored),
             "interval_compatibility_rate": None if not censored_pred else len(compatible) / len(censored_pred),
             "mean_one_sided_violation_cycles": None if not violations.size else float(np.mean(violations)),
@@ -79,10 +76,17 @@ def summarize_battery_cases(cases: list[BatteryPrognosisCase]) -> dict:
     }
 
 
-def run_nasa_battery_benchmark(data_dir: str | Path, *, battery_ids=NASA_BATTERY_IDS, cutpoints=DEFAULT_CUTPOINTS) -> dict:
+def run_nasa_battery_benchmark(
+    data_dir: str | Path,
+    *,
+    battery_ids=NASA_BATTERY_IDS,
+    cutpoints=DEFAULT_CUTPOINTS,
+    pipeline_factory: Callable[..., object] | None = None,
+) -> dict:
     root = Path(data_dir)
     cases: list[BatteryPrognosisCase] = []
     failures = []
+    factory = pipeline_factory or BatteryPrognosticPipeline
 
     for battery_id in battery_ids:
         try:
@@ -91,17 +95,13 @@ def run_nasa_battery_benchmark(data_dir: str | Path, *, battery_ids=NASA_BATTERY
             indices = np.asarray([c.cycle_index for c in cycles], dtype=float)
             last_observed = int(indices[-1])
             eol = first_eol_cycle(cycles)
-
             for cutpoint in cutpoints:
                 if cutpoint > last_observed or (eol is not None and cutpoint >= eol):
                     continue
                 mask = indices <= cutpoint
                 started = perf_counter()
-                result = BatteryPrognosticPipeline(eol_capacity_ah=NASA_EOL_CAPACITY_AH).run(
-                    indices[mask], capacities[mask], battery_id=battery_id
-                )
+                result = factory(eol_capacity_ah=NASA_EOL_CAPACITY_AH).run(indices[mask], capacities[mask], battery_id=battery_id)
                 runtime = perf_counter() - started
-
                 prognosis = result.prognosis
                 pred_rul = None if prognosis is None else prognosis.remaining_useful_life
                 pred_eol = None if pred_rul is None else float(cutpoint + pred_rul)
@@ -114,35 +114,20 @@ def run_nasa_battery_benchmark(data_dir: str | Path, *, battery_ids=NASA_BATTERY
                 exact_interval_hit = None
                 if eol is not None and lower is not None and upper is not None:
                     exact_interval_hit = bool(lower <= eol <= upper)
-
-                # Right-censored cells only tell us that EOL happened after the
-                # final recorded cycle. A prediction interval is compatible if
-                # its optimistic upper bound reaches beyond that censoring time.
                 censor_ok = None
                 violation = None
                 if eol is None and upper is not None:
                     censor_ok = bool(upper > last_observed)
                     violation = float(max(last_observed - upper, 0.0))
-
                 cases.append(BatteryPrognosisCase(
-                    battery_id=battery_id,
-                    observation_cycle=int(cutpoint),
-                    eol_observed=eol is not None,
-                    last_observed_cycle=last_observed,
-                    true_eol_cycle=None if eol is None else int(eol),
-                    true_rul_cycles=true_rul,
-                    predicted_rul_cycles=None if pred_rul is None else float(pred_rul),
-                    predicted_eol_cycle=pred_eol,
-                    predicted_eol_lower=lower,
-                    predicted_eol_upper=upper,
-                    interval_width_cycles=interval_width,
-                    exact_interval_contains_eol=exact_interval_hit,
-                    absolute_error_cycles=abs_error,
-                    censoring_compatible=censor_ok,
-                    censoring_violation_cycles=violation,
-                    confidence=float(result.confidence),
-                    abstained=bool(result.abstained),
-                    runtime_seconds=float(runtime),
+                    battery_id=battery_id, observation_cycle=int(cutpoint), eol_observed=eol is not None,
+                    last_observed_cycle=last_observed, true_eol_cycle=None if eol is None else int(eol),
+                    true_rul_cycles=true_rul, predicted_rul_cycles=None if pred_rul is None else float(pred_rul),
+                    predicted_eol_cycle=pred_eol, predicted_eol_lower=lower, predicted_eol_upper=upper,
+                    interval_width_cycles=interval_width, exact_interval_contains_eol=exact_interval_hit,
+                    absolute_error_cycles=abs_error, censoring_compatible=censor_ok,
+                    censoring_violation_cycles=violation, confidence=float(result.confidence),
+                    abstained=bool(result.abstained), runtime_seconds=float(runtime),
                 ))
         except Exception as exc:
             failures.append({"battery_id": battery_id, "error": f"{type(exc).__name__}: {exc}"})
@@ -150,14 +135,10 @@ def run_nasa_battery_benchmark(data_dir: str | Path, *, battery_ids=NASA_BATTERY
     return {
         "source": "NASA Ames Prognostics Center of Excellence Battery Aging Dataset",
         "protocol": {
-            "battery_ids": list(battery_ids),
-            "cutpoints": list(cutpoints),
-            "eol_capacity_ah": NASA_EOL_CAPACITY_AH,
+            "battery_ids": list(battery_ids), "cutpoints": list(cutpoints), "eol_capacity_ah": NASA_EOL_CAPACITY_AH,
             "information_rule": "Predictions use only capacity history available at each cutpoint.",
             "right_censoring_rule": "Censored cases are never assigned point RUL error. Interval compatibility is evaluated one-sided against the final observed healthy cycle.",
             "interval_method": "Regression-parameter uncertainty plus fixed-window model disagreement (20, 40, full history).",
         },
-        "summary": summarize_battery_cases(cases),
-        "cases": [asdict(row) for row in cases],
-        "failures": failures,
+        "summary": summarize_battery_cases(cases), "cases": [asdict(row) for row in cases], "failures": failures,
     }
