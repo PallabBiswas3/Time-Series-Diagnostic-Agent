@@ -2,6 +2,34 @@
 
 Adaptive, evidence-backed industrial time-series diagnostics.
 
+## Stable pipeline API
+
+Pipeline version `1.0.0` exposes one entry point for all six domains and always returns a validated `DiagnosticResult`:
+
+```python
+from tsdiag import diagnose
+
+result = diagnose(
+    "process",
+    signal_matrix=current,
+    normal_reference=healthy_reference,
+    channel_names=["pressure", "flow", "level"],
+    sampling_rate_hz=1.0,
+)
+print(result.decision, result.detection, result.localization)
+```
+
+| Domain | Executable baseline | Optional capability |
+| --- | --- | --- |
+| `bearing` | signal quality, spectral kurtosis, envelope analysis, fault-frequency matching | bearing geometry and speed metadata improve labeling |
+| `process` | PCA monitoring, contribution, onset, Granger and root-cause ranking | topology and fault catalog |
+| `wind_scada` | robust normal behavior residuals, persistence and change points | supplied healthy reference and physics model |
+| `battery` | cell-to-pack voltage/temperature deviation, localization and risk | trained prognostic model |
+| `turbofan` | sensor trend screening, health index and linear RUL baseline | trained RUL model |
+| `transformer` | wavelet denoising, correlation weighting and multisensor anomaly evidence | trained fault classifier for fault labels |
+
+The pipeline returns `abstain` with a reason when metadata is missing or evidence cannot support the requested label. See [`examples/run_full_pipeline.py`](examples/run_full_pipeline.py) for all six calls. `IndustrialDiagnosticOrchestrator` remains available as the legacy specialist-agent API.
+
 This project is designed as a **specialist-agent platform**, not a single bearing classifier. The long-term goal is to combine deterministic signal analysis, statistical monitoring, causal/root-cause reasoning, learned models, multimodal evidence, physics/manual verification, prognostics, and later sovereign industrial orchestration.
 
 ## Current specialist agents
@@ -166,7 +194,9 @@ The repository now has concrete homes/interfaces for the major method families w
 
 Not every research method is implemented as a full production model yet. For example, domain-specific CNN/Transformer models, digital twins, full Bayesian networks, advanced wavelet/framelet models, and validated RUL networks require separate datasets/model artifacts and will be added as specialized implementations rather than placeholder claims.
 
-## Planned next phases
+## Benchmark-improvement phase
+
+The six deterministic domain paths are complete at pipeline version `1.0.0`. The items below are now benchmark and model-quality improvements rather than prerequisites for running the public pipeline.
 
 1. **Real bearing benchmark** — MFPT/CWRU-style validation and better resonance-band selection.
 2. **Generic anomaly toolkit** — change-point, autocorrelation, wavelet, spectral-kurtosis/kurtogram, multivariate anomaly taxonomy.

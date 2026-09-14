@@ -5,6 +5,8 @@ from .wind_scada import WIND_SCADA_PACK
 from .battery import BATTERY_PACK
 from .turbofan import TURBOFAN_PACK
 from .transformer import TRANSFORMER_PACK
+from .bearing_runner import BearingDiagnosticPipeline
+from .runners import BatteryDiagnosticPipeline, TransformerDiagnosticPipeline, TurbofanDiagnosticPipeline, WindScadaDiagnosticPipeline
 
 DOMAIN_PACKS = {
     pack.key: pack
@@ -37,4 +39,9 @@ __all__ = [
     "TRANSFORMER_PACK",
     "DOMAIN_PACKS",
     "get_domain_pack",
+    "BearingDiagnosticPipeline",
+    "WindScadaDiagnosticPipeline",
+    "BatteryDiagnosticPipeline",
+    "TurbofanDiagnosticPipeline",
+    "TransformerDiagnosticPipeline",
 ]
