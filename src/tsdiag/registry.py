@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from hashlib import sha256
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .contracts import DiagnosticRequest, DomainPlugin
@@ -61,28 +63,13 @@ class PolicyRecord:
 
 @dataclass
 class PolicyRegistry:
-    """Versioned decision-policy registry with authoritative explicit refs.
-
-    ``default`` may remain task-aware. Every non-default reference identifies one
-    concrete policy version and is checked at build time so an explicit request
-    can never silently execute another policy.
-    """
-
     _records: dict[tuple[str, str], PolicyRecord] = field(default_factory=dict)
 
     @staticmethod
     def _key(domain: str, ref: str) -> tuple[str, str]:
         return str(domain).strip().lower(), str(ref).strip()
 
-    def register(
-        self,
-        domain: str,
-        ref: str,
-        factory: PolicyFactory,
-        *,
-        supported_tasks: tuple[str, ...] = (),
-        replace: bool = False,
-    ) -> None:
+    def register(self, domain: str, ref: str, factory: PolicyFactory, *, supported_tasks: tuple[str, ...] = (), replace: bool = False) -> None:
         key = self._key(domain, ref)
         if not key[1]:
             raise ValueError("policy ref must be non-empty")
@@ -91,9 +78,7 @@ class PolicyRegistry:
         if key in self._records and not replace:
             return
         self._records[key] = PolicyRecord(
-            domain=key[0],
-            ref=key[1],
-            factory=factory,
+            domain=key[0], ref=key[1], factory=factory,
             supported_tasks=tuple(str(task).strip().lower() for task in supported_tasks),
         )
 
@@ -113,21 +98,40 @@ class PolicyRegistry:
         return tuple(sorted(ref for (d, ref) in self._records if d == key))
 
 
+ModelValidator = Callable[[Any], None]
+
+
+def _artifact_checksum(artifact: Any) -> str | None:
+    if isinstance(artifact, (bytes, bytearray, memoryview)):
+        return sha256(bytes(artifact)).hexdigest()
+    if isinstance(artifact, (str, Path)):
+        path = Path(artifact)
+        if path.is_file():
+            digest = sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+    return None
+
+
 @dataclass(frozen=True)
 class ModelRecord:
     ref: str
     version: str
     artifact: Any = None
+    validator: ModelValidator | None = None
+    checksum: str | None = None
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def validate_artifact(self) -> None:
+        if self.artifact is not None and self.validator is not None:
+            self.validator(self.artifact)
 
 
 @dataclass
 class ModelRegistry:
-    """Explicit model-artifact registry with immutable version provenance.
-
-    Registration does not imply validation. A benchmark/report must still state
-    the dataset and protocol under which a particular model version was assessed.
-    """
+    """Versioned artifacts that can be validated and injected by workflow slot."""
 
     _records: dict[str, ModelRecord] = field(default_factory=dict)
 
@@ -137,6 +141,8 @@ class ModelRegistry:
         *,
         version: str,
         artifact: Any = None,
+        validator: ModelValidator | None = None,
+        checksum: str | None = None,
         metadata: Mapping[str, Any] | None = None,
         replace: bool = False,
     ) -> ModelRecord:
@@ -145,21 +151,29 @@ class ModelRegistry:
             raise ValueError("model ref must be non-empty")
         if key in self._records and not replace:
             raise KeyError(f"Model ref {key!r} is already registered")
+        if validator is not None and not callable(validator):
+            raise TypeError("model validator must be callable")
         record = ModelRecord(
             ref=key,
             version=str(version),
             artifact=artifact,
+            validator=validator,
+            checksum=checksum or _artifact_checksum(artifact),
             metadata=dict(metadata or {}),
         )
+        record.validate_artifact()
         self._records[key] = record
         return record
 
-    def resolve(self, ref: str) -> ModelRecord:
+    def resolve(self, ref: str, *, validate: bool = True) -> ModelRecord:
         key = str(ref).strip()
         try:
-            return self._records[key]
+            record = self._records[key]
         except KeyError as exc:
             raise KeyError(f"Unknown model ref {key!r}; available: {sorted(self._records)}") from exc
+        if validate:
+            record.validate_artifact()
+        return record
 
     def get(self, ref: str) -> ModelRecord | None:
         return self._records.get(str(ref).strip())
