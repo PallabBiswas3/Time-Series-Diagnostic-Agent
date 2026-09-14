@@ -81,30 +81,31 @@ def test_all_six_domain_plugins_are_registered_after_diagnose():
     for domain in domain_registry.names(): assert "default" in policy_registry.refs(domain)
 
 
-def test_versioned_policy_ref_model_provenance_and_hierarchical_trace():
+def test_versioned_policy_ref_model_provenance_and_decomposed_trace():
     rng = np.random.default_rng(91)
     voltage = 3.7 + rng.normal(scale=0.003, size=(40, 4))
     temperature = 30 + rng.normal(scale=0.1, size=(40, 4))
     model_registry.register("battery-health-test", version="test-v1", metadata={"purpose": "unit-test provenance only"}, replace=True)
 
     result = diagnose(DiagnosticRequest(
-        domain="battery", task="anomaly_localization", policy_ref="compat-1.0",
+        domain="battery", task="anomaly_localization", policy_ref="battery-pack-policy-v2",
         model_refs={"health_model": "battery-health-test"},
         run_context=RunContext(run_id="fixture-run", source="unit-test", dataset_id="fixture-data", protocol_id="fixture-protocol"),
         inputs={"cell_voltage": voltage, "cell_temperature": temperature, "cell_ids": ["a", "b", "c", "d"], "timestamps": np.arange(40)},
     ))
     assert result.decision in {"diagnose", "monitor"}
-    assert result.metadata["workflow_version"] == "1.0"
-    assert result.metadata["policy_version"] == "compat-1.0"
-    assert result.metadata["policy_ref"] == "compat-1.0"
+    assert result.metadata["workflow_version"] == "2.0"
+    assert result.metadata["policy_version"] == "battery-pack-policy-v2"
+    assert result.metadata["policy_ref"] == "battery-pack-policy-v2"
     assert result.metadata["resolved_model_versions"] == {"health_model": "test-v1"}
-    assert result.metadata["compatibility_adapter"] is True
-    outer = result.tool_trace.require("battery_analysis", recursive=False)
-    assert outer.children
+    assert result.tool_trace.require("battery_data_quality", recursive=False)
+    assert result.tool_trace.require("battery_decision", recursive=False)
     assert result.provenance is not None
     assert result.provenance.dataset_id == "fixture-data"
     assert result.provenance.protocol_id == "fixture-protocol"
     assert result.provenance.run_id == "fixture-run"
+    assert result.provenance.workflow_version == "2.0"
+    assert result.provenance.policy_version == "battery-pack-policy-v2"
     assert len(result.provenance.input_hash) == 64
     assert result.uncertainty_estimate is not None
     assert result.abstention is not None
@@ -118,8 +119,10 @@ def test_structured_battery_prognosis_uses_task_specific_policy():
     ))
     assert result.task == "prognosis"
     assert result.prognosis is not None
-    assert result.metadata["workflow_version"] == "1.0"
+    assert result.metadata["workflow_version"] == "prognosis-1.0"
     assert result.metadata["policy_version"] == "capacity-prognosis-policy-v1"
+    assert result.provenance is not None
+    assert result.provenance.workflow_version == "prognosis-1.0"
     outer = result.tool_trace.require("battery_prognosis", recursive=False)
     assert outer.children
 
@@ -127,7 +130,7 @@ def test_structured_battery_prognosis_uses_task_specific_policy():
 def test_explicit_policy_ref_cannot_silently_select_task_policy():
     cycles = np.arange(1, 61, dtype=float); capacity = 2.0 - 0.006 * cycles
     result = diagnose(DiagnosticRequest(
-        domain="battery", task="prognosis", policy_ref="compat-1.0",
+        domain="battery", task="prognosis", policy_ref="battery-pack-policy-v2",
         inputs={"cycle_index": cycles, "capacity_ah": capacity},
     ))
     assert result.decision == "abstain"
