@@ -11,6 +11,10 @@ on:
       - 'src/tsdiag/domains/runners.py'
       - 'src/tsdiag/domains/domain_steps.py'
       - 'src/tsdiag/domains/verification.py'
+      - 'src/tsdiag/domains/compat_plugins.py'
+      - 'src/tsdiag/pipeline.py'
+      - 'src/tsdiag/registry.py'
+      - 'scripts/run_turbofan_cmapss_public_benchmark.py'
       - 'tests/test_cmapss_dataset.py'
       - '.github/workflows/turbofan-cmapss-benchmark.yml'
 
@@ -70,10 +74,6 @@ jobs:
           from tsdiag.datasets.cmapss import CMAPSS_SUBSETS, validate_cmapss_subset
           summaries = [validate_cmapss_subset('data/cmapss', subset) for subset in CMAPSS_SUBSETS]
           print(json.dumps(summaries, indent=2))
-          # Counts are locked to the current official NASA archive bytes. Note:
-          # the Open Data metadata page currently lists FD004 as 248 train / 249
-          # test, while the downloadable archive contains 249 train / 248 test
-          # and exactly 248 FD004 RUL targets.
           expected = {
               'FD001': (100, 100),
               'FD002': (260, 259),
@@ -93,30 +93,12 @@ jobs:
           path: data/cmapss
           key: ${{ steps.cmapss-cache.outputs.cache-primary-key }}
 
-      - name: Run frozen FD001-FD004 RUL benchmark
+      - name: Run frozen FD001-FD004 RUL benchmark through public diagnose path
         run: |
           mkdir -p outputs/turbofan_cmapss
-          python - <<'PY'
-          import json
-          from tsdiag.benchmarks.turbofan_cmapss import run_cmapss_benchmark
-
-          payload = run_cmapss_benchmark(
-              'data/cmapss',
-              output_dir='outputs/turbofan_cmapss',
-          )
-          print(json.dumps(payload['summary'], indent=2))
-          print(json.dumps(payload['by_subset'], indent=2))
-
-          if payload['failures']:
-              raise SystemExit(f"Benchmark failures: {payload['failures']}")
-          summary = payload['summary']
-          if summary['case_count'] != 707:
-              raise SystemExit(f"Expected 707 test engines in the current NASA archive, got {summary['case_count']}")
-          if summary['coverage'] is None or summary['coverage'] < 0.80:
-              raise SystemExit(f"Coverage gate failed: {summary['coverage']}")
-          if summary['rmse_cycles'] is None or summary['rmse_cycles'] > 75.0:
-              raise SystemExit(f"RMSE gate failed: {summary['rmse_cycles']}")
-          PY
+          python scripts/run_turbofan_cmapss_public_benchmark.py \
+            --data-dir data/cmapss \
+            --output-dir outputs/turbofan_cmapss
 
       - name: Upload C-MAPSS benchmark artifact
         if: always()
