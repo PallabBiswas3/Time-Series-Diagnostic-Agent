@@ -25,8 +25,6 @@ class TaskKind(str, Enum):
 
 @dataclass(frozen=True)
 class ToolContract:
-    """Declarative contract for one analysis step."""
-
     name: str
     purpose: str
     required_inputs: tuple[str, ...]
@@ -75,6 +73,9 @@ class ToolRegistry:
 class RunContext:
     run_id: str | None = None
     source: str | None = None
+    dataset_id: str | None = None
+    protocol_id: str | None = None
+    artifact_checksums: Mapping[str, str] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
