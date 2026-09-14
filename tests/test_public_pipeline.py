@@ -76,8 +76,9 @@ def test_battery_pipeline_localizes_outlying_cell():
     assert result.decision == "diagnose"
     assert result.localization.components == ["cell_3"]
     assert result.prognosis is not None
-    assert result.tool_trace[0].tool == "battery_analysis"
-    assert [step.tool for step in result.tool_trace[0].children] == list(get_domain_pack("battery").tool_names())
+    assert [step.tool for step in result.tool_trace] == list(get_domain_pack("battery").tool_names())
+    assert result.metadata["workflow_version"] == "2.0"
+    assert result.metadata["policy_version"] == "battery-pack-policy-v2"
 
 
 def test_turbofan_pipeline_returns_health_and_prognosis():
@@ -130,7 +131,7 @@ def test_new_domain_trace_steps_are_timed_and_json_safe():
                       cell_temperature=30+rng.normal(scale=.1,size=(40,4)),
                       cell_ids=["a","b","c","d"], timestamps=np.arange(40))
     assert all(step.duration_seconds is not None and step.duration_seconds >= 0 for step in result.tool_trace)
-    assert result.tool_trace[0].children
+    assert [step.tool for step in result.tool_trace] == list(get_domain_pack("battery").tool_names())
     json.loads(result.to_json())
 
 
