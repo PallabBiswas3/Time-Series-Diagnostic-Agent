@@ -51,13 +51,8 @@ def _with_task(result: DiagnosticResult, task: str | None) -> DiagnosticResult:
 
 
 def _ensure_plugins() -> None:
-    from .domains.compat_plugins import (
-        BatteryPlugin,
-        BearingPlugin,
-        ProcessPlugin,
-        TransformerPlugin,
-        TurbofanPlugin,
-    )
+    from .domains.battery_plugin import BatteryPlugin
+    from .domains.compat_plugins import BearingPlugin, ProcessPlugin, TransformerPlugin, TurbofanPlugin
     from .domains.wind_scada_plugin import WindScadaPlugin
 
     plugins = (
@@ -72,13 +67,22 @@ def _ensure_plugins() -> None:
         if domain_registry.get(plugin.name) is None:
             domain_registry.register(plugin)
 
-        # Register both a stable alias and the concrete policy version. The
-        # factory is request-aware, but the resulting policy keeps the small
-        # decide(execution, trace) interface.
         probe = plugin.policy(DiagnosticRequest(domain=plugin.name, task=None, inputs={}))
         factory = lambda request, p=plugin: p.policy(request)
         policy_registry.register(plugin.name, "default", factory)
         policy_registry.register(plugin.name, str(probe.version), factory)
+
+    # Battery exposes a second versioned policy for the capacity-history
+    # prognosis task. Register it explicitly because the default probe above is
+    # intentionally the pack-diagnostic policy.
+    battery_plugin = domain_registry.resolve("battery")
+    prognosis_probe_request = DiagnosticRequest(domain="battery", task="prognosis", inputs={})
+    prognosis_probe = battery_plugin.policy(prognosis_probe_request)
+    policy_registry.register(
+        "battery",
+        str(prognosis_probe.version),
+        lambda request, p=battery_plugin: p.policy(request),
+    )
 
 
 def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
@@ -146,16 +150,21 @@ class DiagnosticPipeline:
             return _abstain(domain, default_task, f"Unsupported task {task!r}; available tasks: {sorted(supported_tasks)}")
 
         missing = [key for key in DOMAIN_PACKS[domain].required_metadata if values.get(key) is None]
+        # Capacity-history prognosis is a distinct battery input contract and
+        # therefore does not require pack cell_ids/timestamps.
+        if domain == "battery" and default_task == "prognosis" and values.get("cycle_index") is not None:
+            missing = []
         if missing:
             return _abstain(domain, default_task, f"Missing required metadata: {', '.join(missing)}")
 
         schema_values = dict(values)
         if domain == "bearing" and schema_values.get("signal") is None:
             schema_values["signal"] = schema_values.get("signal_matrix")
-        try:
-            get_input_schema(domain).validate(schema_values)
-        except (TypeError, ValueError) as exc:
-            return _abstain(domain, default_task, f"Input validation failed: {exc}")
+        if not (domain == "battery" and default_task == "prognosis"):
+            try:
+                get_input_schema(domain).validate(schema_values)
+            except (TypeError, ValueError) as exc:
+                return _abstain(domain, default_task, f"Input validation failed: {exc}")
 
         if domain == "wind_scada":
             try:
