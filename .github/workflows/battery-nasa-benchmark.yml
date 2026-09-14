@@ -1,0 +1,70 @@
+name: NASA Battery Benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/tsdiag/tools/battery_prognosis.py'
+      - 'src/tsdiag/domains/battery_prognosis_runner.py'
+      - 'src/tsdiag/datasets/battery_nasa.py'
+      - 'src/tsdiag/benchmarks/battery_nasa.py'
+      - 'tests/test_battery_prognosis.py'
+      - '.github/workflows/battery-nasa-benchmark.yml'
+
+jobs:
+  nasa-battery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install package
+        run: python -m pip install -e '.[dev]'
+      - name: Download fixed NASA cells and run benchmark
+        run: |
+          mkdir -p data/nasa_battery outputs
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from tsdiag.datasets.battery_nasa import download_nasa_battery_subset
+          from tsdiag.benchmarks.battery_nasa import run_nasa_battery_benchmark
+
+          data_dir = Path('data/nasa_battery')
+          download_nasa_battery_subset(data_dir)
+          payload = run_nasa_battery_benchmark(data_dir)
+          Path('outputs/battery_nasa_benchmark.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
+
+          summary = payload['summary']
+          point = summary['point_error_metrics']
+          censored = summary['censoring_metrics']
+          print(json.dumps(summary, indent=2))
+
+          if payload['failures']:
+              raise SystemExit(f"Benchmark failures: {payload['failures']}")
+          if point['covered_case_count'] == 0:
+              raise SystemExit('No exact-EOL predictions were produced.')
+          if censored['covered_case_count'] == 0:
+              raise SystemExit('No right-censored predictions were produced.')
+          PY
+      - name: Export cases CSV
+        run: |
+          python - <<'PY'
+          import csv, json
+          from pathlib import Path
+          payload = json.loads(Path('outputs/battery_nasa_benchmark.json').read_text())
+          cases = payload['cases']
+          if cases:
+              with Path('outputs/battery_nasa_cases.csv').open('w', newline='', encoding='utf-8') as f:
+                  w = csv.DictWriter(f, fieldnames=cases[0].keys())
+                  w.writeheader(); w.writerows(cases)
+          PY
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: battery-nasa-benchmark
+          path: outputs/
+          if-no-files-found: error
