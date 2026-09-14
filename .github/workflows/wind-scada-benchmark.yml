@@ -1,9 +1,14 @@
 name: CARE v6 Wind SCADA Benchmark
 
-# CI trigger: validate PR #11 on the full CARE v6 benchmark.
 on:
-  pull_request:
+  push:
+    branches: [main]
     paths:
+      - "src/tsdiag/contracts.py"
+      - "src/tsdiag/execution.py"
+      - "src/tsdiag/pipeline.py"
+      - "src/tsdiag/registry.py"
+      - "src/tsdiag/result_contract.py"
       - "src/tsdiag/datasets/wind_care.py"
       - "src/tsdiag/tools/wind_scada.py"
       - "src/tsdiag/domain/**"
@@ -11,8 +16,30 @@ on:
       - "src/tsdiag/domains/wind_scada*"
       - "src/tsdiag/evaluation/wind_scada.py"
       - "src/tsdiag/benchmarks/wind_scada.py"
+      - "src/tsdiag/benchmarks/wind_scada_public.py"
       - "scripts/run_wind_scada_benchmark.py"
       - "tests/test_wind*"
+      - "tests/test_plugin_architecture.py"
+      - "tests/test_residual_changepoint.py"
+      - ".github/workflows/wind-scada-benchmark.yml"
+  pull_request:
+    paths:
+      - "src/tsdiag/contracts.py"
+      - "src/tsdiag/execution.py"
+      - "src/tsdiag/pipeline.py"
+      - "src/tsdiag/registry.py"
+      - "src/tsdiag/result_contract.py"
+      - "src/tsdiag/datasets/wind_care.py"
+      - "src/tsdiag/tools/wind_scada.py"
+      - "src/tsdiag/domain/**"
+      - "src/tsdiag/detectors/**"
+      - "src/tsdiag/domains/wind_scada*"
+      - "src/tsdiag/evaluation/wind_scada.py"
+      - "src/tsdiag/benchmarks/wind_scada.py"
+      - "src/tsdiag/benchmarks/wind_scada_public.py"
+      - "scripts/run_wind_scada_benchmark.py"
+      - "tests/test_wind*"
+      - "tests/test_plugin_architecture.py"
       - "tests/test_residual_changepoint.py"
       - ".github/workflows/wind-scada-benchmark.yml"
   workflow_dispatch:
@@ -39,7 +66,8 @@ jobs:
             tests/test_wind_scada.py \
             tests/test_wind_scada_evaluation.py \
             tests/test_wind_physics.py \
-            tests/test_residual_changepoint.py
+            tests/test_residual_changepoint.py \
+            tests/test_plugin_architecture.py
 
   care-v6-real-data:
     runs-on: ubuntu-latest
@@ -83,7 +111,7 @@ jobs:
           path: CARE_To_Compare.zip
           key: ${{ steps.care-cache.outputs.cache-primary-key }}
 
-      - name: Run complete 95-event CARE v6 benchmark
+      - name: Run complete 95-event CARE v6 benchmark through public diagnose path
         run: |
           python scripts/run_wind_scada_benchmark.py \
             --data-dir CARE_To_Compare.zip \
