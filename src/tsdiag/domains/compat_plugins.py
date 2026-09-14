@@ -64,15 +64,16 @@ def _stamp_result(
 class PassthroughDecisionPolicy:
     result_key: str
     workflow_version: str
+    request: DiagnosticRequest
     version: str = "compat-1.0"
 
-    def decide(self, execution: Mapping[str, Any], trace: ExecutionTrace, request: DiagnosticRequest) -> DiagnosticResult:
+    def decide(self, execution: Mapping[str, Any], trace: ExecutionTrace) -> DiagnosticResult:
         result = execution[self.result_key]
         if not isinstance(result, DiagnosticResult):
             raise TypeError(f"{self.result_key!r} did not produce DiagnosticResult")
         return _stamp_result(
             result,
-            request,
+            self.request,
             trace,
             workflow_version=self.workflow_version,
             policy_version=self.version,
@@ -82,9 +83,10 @@ class PassthroughDecisionPolicy:
 @dataclass(frozen=True)
 class ProcessDecisionPolicy:
     workflow_version: str
+    request: DiagnosticRequest
     version: str = "compat-1.0"
 
-    def decide(self, execution: Mapping[str, Any], trace: ExecutionTrace, request: DiagnosticRequest) -> DiagnosticResult:
+    def decide(self, execution: Mapping[str, Any], trace: ExecutionTrace) -> DiagnosticResult:
         raw = execution["process_analysis"]
         if not isinstance(raw, ProcessDiagnosticResult):
             raise TypeError("process_analysis did not produce ProcessDiagnosticResult")
@@ -158,7 +160,7 @@ class ProcessDecisionPolicy:
         )
         return _stamp_result(
             result,
-            request,
+            self.request,
             trace,
             workflow_version=self.workflow_version,
             policy_version=self.version,
@@ -200,7 +202,7 @@ class BearingPlugin:
         return Workflow((Step("bearing_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
-        return PassthroughDecisionPolicy("bearing_analysis", self.workflow_version)
+        return PassthroughDecisionPolicy("bearing_analysis", self.workflow_version, request)
 
 
 class ProcessPlugin:
@@ -240,7 +242,7 @@ class ProcessPlugin:
         return Workflow((Step("process_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> ProcessDecisionPolicy:
-        return ProcessDecisionPolicy(self.workflow_version)
+        return ProcessDecisionPolicy(self.workflow_version, request)
 
 
 class BatteryPlugin:
@@ -264,7 +266,7 @@ class BatteryPlugin:
         return Workflow((Step("battery_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
-        return PassthroughDecisionPolicy("battery_analysis", self.workflow_version)
+        return PassthroughDecisionPolicy("battery_analysis", self.workflow_version, request)
 
 
 class TurbofanPlugin:
@@ -288,7 +290,7 @@ class TurbofanPlugin:
         return Workflow((Step("turbofan_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
-        return PassthroughDecisionPolicy("turbofan_analysis", self.workflow_version)
+        return PassthroughDecisionPolicy("turbofan_analysis", self.workflow_version, request)
 
 
 class TransformerPlugin:
@@ -312,4 +314,4 @@ class TransformerPlugin:
         return Workflow((Step("transformer_analysis", analysis, version="legacy-runner-v1"),), version=self.workflow_version)
 
     def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
-        return PassthroughDecisionPolicy("transformer_analysis", self.workflow_version)
+        return PassthroughDecisionPolicy("transformer_analysis", self.workflow_version, request)
