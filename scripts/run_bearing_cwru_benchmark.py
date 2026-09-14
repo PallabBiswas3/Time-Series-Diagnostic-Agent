@@ -4,8 +4,44 @@ import argparse
 import json
 from pathlib import Path
 
-from tsdiag.benchmarks.bearing_cwru import run_cwru_benchmark
+from tsdiag import diagnose
+from tsdiag.benchmarks import bearing_cwru as benchmark_module
+from tsdiag.contracts import DiagnosticRequest
 from tsdiag.datasets.bearing_cwru import download_cwru_007_drive_end
+
+
+class _PublicBearingPipeline:
+    """Benchmark compatibility adapter that exercises the public diagnose boundary."""
+
+    def __init__(self, *, minimum_confidence: float = 0.45, minimum_harmonics: int = 2):
+        self.minimum_confidence = float(minimum_confidence)
+        self.minimum_harmonics = int(minimum_harmonics)
+
+    def run(
+        self,
+        signal,
+        sampling_rate_hz: float,
+        *,
+        fault_frequencies=None,
+        shaft_rate_hz=None,
+        channel_name="ch0",
+        operating_condition=None,
+    ):
+        return diagnose(DiagnosticRequest(
+            domain="bearing",
+            task="fault_diagnosis",
+            policy_ref="compat-1.0",
+            inputs={
+                "signal": signal,
+                "sampling_rate_hz": sampling_rate_hz,
+                "fault_frequencies": dict(fault_frequencies or {}),
+                "shaft_rate_hz": shaft_rate_hz,
+                "channel_name": channel_name,
+                "operating_condition": dict(operating_condition or {}),
+                "minimum_confidence": self.minimum_confidence,
+                "minimum_harmonics": self.minimum_harmonics,
+            },
+        ))
 
 
 def main() -> None:
@@ -24,7 +60,11 @@ def main() -> None:
         paths = download_cwru_007_drive_end(data_dir)
         print(f"CWRU files ready: {len(paths)}")
 
-    result = run_cwru_benchmark(
+    # Keep the frozen benchmark/evaluation protocol intact while replacing only
+    # its diagnostic execution boundary. Labels and aggregation remain inside the
+    # benchmark module and are never supplied to diagnose().
+    benchmark_module.BearingDiagnosticPipeline = _PublicBearingPipeline
+    result = benchmark_module.run_cwru_benchmark(
         data_dir,
         window_seconds=args.window_seconds,
         max_windows=args.max_windows,
