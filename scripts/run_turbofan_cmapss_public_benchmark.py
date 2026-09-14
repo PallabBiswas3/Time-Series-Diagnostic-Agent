@@ -4,24 +4,22 @@ import argparse
 import json
 
 from tsdiag import diagnose
-from tsdiag.benchmarks import turbofan_cmapss as benchmark_module
-from tsdiag.contracts import DiagnosticRequest
+from tsdiag.benchmarks.turbofan_cmapss import run_cmapss_benchmark
+from tsdiag.contracts import DiagnosticRequest, RunContext
 
 
-class _PublicTurbofanPipeline:
-    """Preserve C-MAPSS science while routing inference through diagnose()."""
-
+class PublicTurbofanPipeline:
     def run(self, signal_matrix, channel_names, cycle_index, **context):
         return diagnose(DiagnosticRequest(
             domain="turbofan",
             task="remaining_useful_life",
             policy_ref="compat-1.0",
-            inputs={
-                "signal_matrix": signal_matrix,
-                "channel_names": channel_names,
-                "cycle_index": cycle_index,
-                **context,
-            },
+            run_context=RunContext(
+                source="NASA Ames Prognostics Center of Excellence C-MAPSS",
+                dataset_id="cmapss-fd001-fd004",
+                protocol_id="train-only-rul-v1",
+            ),
+            inputs={"signal_matrix": signal_matrix, "channel_names": channel_names, "cycle_index": cycle_index, **context},
         ))
 
 
@@ -31,12 +29,10 @@ def main() -> None:
     parser.add_argument("--output-dir", default="outputs/turbofan_cmapss")
     args = parser.parse_args()
 
-    # The benchmark retains model fitting and deliberately loads test RUL labels
-    # only after fitting. Only the per-trajectory inference call is replaced.
-    benchmark_module.TurbofanDiagnosticPipeline = _PublicTurbofanPipeline
-    payload = benchmark_module.run_cmapss_benchmark(
+    payload = run_cmapss_benchmark(
         args.data_dir,
         output_dir=args.output_dir,
+        pipeline_factory=PublicTurbofanPipeline,
     )
     print(json.dumps(payload["summary"], indent=2))
     print(json.dumps(payload["by_subset"], indent=2))
