@@ -6,12 +6,12 @@ from pathlib import Path
 
 from tsdiag import diagnose
 from tsdiag.benchmarks import bearing_cwru as benchmark_module
-from tsdiag.contracts import DiagnosticRequest
+from tsdiag.contracts import DiagnosticRequest, RunContext
 from tsdiag.datasets.bearing_cwru import download_cwru_007_drive_end
 
 
 class _PublicBearingPipeline:
-    """Benchmark compatibility adapter that exercises the public diagnose boundary."""
+    """Temporary benchmark adapter exercising the canonical Bearing policy."""
 
     def __init__(self, *, minimum_confidence: float = 0.45, minimum_harmonics: int = 2):
         self.minimum_confidence = float(minimum_confidence)
@@ -30,7 +30,12 @@ class _PublicBearingPipeline:
         return diagnose(DiagnosticRequest(
             domain="bearing",
             task="fault_diagnosis",
-            policy_ref="compat-1.0",
+            policy_ref="bearing-policy-v2",
+            run_context=RunContext(
+                source="CWRU Bearing Data Center",
+                dataset_id="cwru-12k-drive-end-skf-007",
+                protocol_id="cwru-fixed-record-v1",
+            ),
             inputs={
                 "signal": signal,
                 "sampling_rate_hz": sampling_rate_hz,
@@ -42,6 +47,27 @@ class _PublicBearingPipeline:
                 "minimum_harmonics": self.minimum_harmonics,
             },
         ))
+
+
+def _assert_locked_parity(summary: dict) -> None:
+    expected = {
+        "record_count": 16,
+        "all_record_accuracy": 0.3125,
+        "all_record_macro_f1": 0.35,
+        "coverage": 0.3125,
+        "abstention_rate": 0.6875,
+        "covered_accuracy": 1.0,
+        "normal_false_alarm_rate": 0.0,
+        "normal_abstention_rate": 1.0,
+        "fault_detection_rate": 0.4166666666666667,
+    }
+    for key, value in expected.items():
+        actual = summary.get(key)
+        if isinstance(value, float):
+            if actual is None or abs(float(actual) - value) > 1e-12:
+                raise SystemExit(f"CWRU parity gate failed for {key}: expected {value}, got {actual}")
+        elif actual != value:
+            raise SystemExit(f"CWRU parity gate failed for {key}: expected {value}, got {actual}")
 
 
 def main() -> None:
@@ -60,9 +86,8 @@ def main() -> None:
         paths = download_cwru_007_drive_end(data_dir)
         print(f"CWRU files ready: {len(paths)}")
 
-    # Keep the frozen benchmark/evaluation protocol intact while replacing only
-    # its diagnostic execution boundary. Labels and aggregation remain inside the
-    # benchmark module and are never supplied to diagnose().
+    # Compatibility shim only; labels/aggregation stay evaluation-side. The
+    # benchmark module will be converted to direct request construction next.
     benchmark_module.BearingDiagnosticPipeline = _PublicBearingPipeline
     result = benchmark_module.run_cwru_benchmark(
         data_dir,
@@ -77,6 +102,7 @@ def main() -> None:
         print("Failures:")
         print(json.dumps(result["failures"], indent=2))
         raise SystemExit(2)
+    _assert_locked_parity(result["summary"])
 
 
 if __name__ == "__main__":
