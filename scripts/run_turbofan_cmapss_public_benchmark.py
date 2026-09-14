@@ -1,0 +1,56 @@
+from __future__ import annotations
+
+import argparse
+import json
+
+from tsdiag import diagnose
+from tsdiag.benchmarks import turbofan_cmapss as benchmark_module
+from tsdiag.contracts import DiagnosticRequest
+
+
+class _PublicTurbofanPipeline:
+    """Preserve C-MAPSS science while routing inference through diagnose()."""
+
+    def run(self, signal_matrix, channel_names, cycle_index, **context):
+        return diagnose(DiagnosticRequest(
+            domain="turbofan",
+            task="remaining_useful_life",
+            policy_ref="compat-1.0",
+            inputs={
+                "signal_matrix": signal_matrix,
+                "channel_names": channel_names,
+                "cycle_index": cycle_index,
+                **context,
+            },
+        ))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run frozen C-MAPSS benchmark through public diagnose boundary")
+    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--output-dir", default="outputs/turbofan_cmapss")
+    args = parser.parse_args()
+
+    # The benchmark retains model fitting and deliberately loads test RUL labels
+    # only after fitting. Only the per-trajectory inference call is replaced.
+    benchmark_module.TurbofanDiagnosticPipeline = _PublicTurbofanPipeline
+    payload = benchmark_module.run_cmapss_benchmark(
+        args.data_dir,
+        output_dir=args.output_dir,
+    )
+    print(json.dumps(payload["summary"], indent=2))
+    print(json.dumps(payload["by_subset"], indent=2))
+
+    if payload["failures"]:
+        raise SystemExit(f"Benchmark failures: {payload['failures']}")
+    summary = payload["summary"]
+    if summary["case_count"] != 707:
+        raise SystemExit(f"Expected 707 test engines in the current NASA archive, got {summary['case_count']}")
+    if summary["coverage"] is None or summary["coverage"] < 0.80:
+        raise SystemExit(f"Coverage gate failed: {summary['coverage']}")
+    if summary["rmse_cycles"] is None or summary["rmse_cycles"] > 75.0:
+        raise SystemExit(f"RMSE gate failed: {summary['rmse_cycles']}")
+
+
+if __name__ == "__main__":
+    main()
