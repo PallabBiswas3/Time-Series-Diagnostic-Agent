@@ -3,6 +3,19 @@ import json
 
 from tsdiag import PIPELINE_VERSION, DiagnosticPipeline, DiagnosticResult, diagnose, get_domain_pack
 from tsdiag.domains import default_domain_tool_registry
+from tsdiag.execution import ExecutionTrace
+
+
+def _trace_names(result):
+    trace = result.tool_trace
+    if isinstance(trace, ExecutionTrace):
+        return [step.tool for step in trace.flatten()]
+    rows = []
+    def visit(step):
+        rows.append(step.tool)
+        for child in getattr(step, "children", []): visit(child)
+    for step in trace: visit(step)
+    return rows
 
 
 def test_missing_required_metadata_returns_structured_abstention():
@@ -22,6 +35,7 @@ def test_bearing_runs_through_public_pipeline():
     assert result.decision in {"diagnose", "abstain"}
     assert result.tool_trace
     assert all(step.duration_seconds is not None for step in result.tool_trace)
+    assert result.tool_trace[-1].tool == "bearing_evidence_fusion"
 
 
 def test_process_adapter_returns_cross_domain_contract():
@@ -34,6 +48,8 @@ def test_process_adapter_returns_cross_domain_contract():
     assert result.domain == "process"
     assert result.metadata["pipeline_version"] == PIPELINE_VERSION
     assert all(step.duration_seconds is not None for step in result.tool_trace)
+    assert result.tool_trace[0].tool == "process_analysis"
+    assert result.tool_trace[0].children
 
 
 def test_wind_scada_pipeline_localizes_persistent_shift():
@@ -58,7 +74,8 @@ def test_battery_pipeline_localizes_outlying_cell():
     assert result.decision == "diagnose"
     assert result.localization.components == ["cell_3"]
     assert result.prognosis is not None
-    assert [step.tool for step in result.tool_trace] == list(get_domain_pack("battery").tool_names())
+    assert result.tool_trace[0].tool == "battery_analysis"
+    assert [step.tool for step in result.tool_trace[0].children] == list(get_domain_pack("battery").tool_names())
 
 
 def test_turbofan_pipeline_returns_health_and_prognosis():
@@ -69,7 +86,8 @@ def test_turbofan_pipeline_returns_health_and_prognosis():
     assert result.decision in {"diagnose", "monitor"}
     assert result.prognosis is not None
     assert result.localization.channels
-    assert [step.tool for step in result.tool_trace] == list(get_domain_pack("turbofan").tool_names())
+    assert result.tool_trace[0].tool == "turbofan_analysis"
+    assert [step.tool for step in result.tool_trace[0].children] == list(get_domain_pack("turbofan").tool_names())
 
 
 def test_transformer_pipeline_completes_and_abstains_without_classifier_when_abnormal():
@@ -82,12 +100,13 @@ def test_transformer_pipeline_completes_and_abstains_without_classifier_when_abn
     result = diagnose("transformer", signal_matrix=signal, sampling_rate_hz=fs, sensor_positions=["tank_a", "tank_b"])
     assert result.domain == "transformer"
     assert result.decision in {"monitor", "abstain"}
-    assert result.tool_trace[-1].tool == "transformer_decision"
-    assert [step.tool for step in result.tool_trace] == list(get_domain_pack("transformer").tool_names())
+    assert result.tool_trace[0].tool == "transformer_analysis"
+    assert result.tool_trace[0].children[-1].tool == "transformer_decision"
+    assert [step.tool for step in result.tool_trace[0].children] == list(get_domain_pack("transformer").tool_names())
 
 
-def test_dispatcher_exposes_frozen_version():
-    assert DiagnosticPipeline.version == "1.0.0"
+def test_dispatcher_exposes_current_version():
+    assert DiagnosticPipeline.version == PIPELINE_VERSION == "1.1.0"
 
 
 def test_unsupported_domain_task_returns_structured_abstention():
@@ -108,6 +127,7 @@ def test_new_domain_trace_steps_are_timed_and_json_safe():
                       cell_temperature=30+rng.normal(scale=.1,size=(40,4)),
                       cell_ids=["a","b","c","d"], timestamps=np.arange(40))
     assert all(step.duration_seconds is not None and step.duration_seconds >= 0 for step in result.tool_trace)
+    assert result.tool_trace[0].children
     json.loads(result.to_json())
 
 
