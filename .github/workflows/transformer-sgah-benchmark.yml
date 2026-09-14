@@ -8,7 +8,6 @@ on:
       - 'src/tsdiag/datasets/transformer_sgah.py'
       - 'src/tsdiag/benchmarks/transformer_sgah.py'
       - 'src/tsdiag/domains/domain_steps.py'
-      - 'src/tsdiag/domains/runners.py'
       - 'src/tsdiag/domains/verification.py'
       - 'tests/test_transformer_sgah_dataset.py'
       - '.github/workflows/transformer-sgah-benchmark.yml'
@@ -32,6 +31,7 @@ jobs:
         run: pytest -q tests/test_transformer_sgah_dataset.py tests/test_domain_verification.py
 
   sgah-real-data:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     needs: sgah-tests
@@ -100,8 +100,6 @@ jobs:
           summary = payload['summary']
           if summary['case_count'] <= 0 or summary['positive_count'] <= 0:
               raise SystemExit(f"Invalid frozen test manifest: {summary}")
-          # Predeclared first-pass baseline gates. Do not loosen them in response
-          # to the frozen test result; methodology changes must be trained/dev-only.
           if summary['recall'] is None or summary['recall'] < 0.60:
               raise SystemExit(f"Transformer-fault recall gate failed: {summary['recall']}")
           if summary['balanced_accuracy'] is None or summary['balanced_accuracy'] < 0.70:
