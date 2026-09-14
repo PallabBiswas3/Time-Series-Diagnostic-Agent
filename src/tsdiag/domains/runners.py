@@ -8,6 +8,7 @@ from ..execution import StepExecutor
 from ..models import DetectionResult, DiagnosticHypothesis, DiagnosticResult, Evidence, LocalizationResult, PrognosisResult, VerificationResult
 from ..result_contract import standardize_result
 from .domain_steps import default_domain_tool_registry
+from .verification import battery_physics_verification, turbofan_physics_verification, transformer_physics_verification
 
 
 def _execute(domain: str, values: dict[str, Any]):
@@ -46,11 +47,12 @@ class BatteryDiagnosticPipeline:
         ev=Evidence("cell_deviation",f"Largest cell-to-pack deviation is {top} (score={state['top_score']:.2f}).",confidence,
                     {"cell_scores":dict(zip(state["cell_ids"],np.asarray(state["cell_fault_scores"]).tolist()))},"battery-cell-evidence","statistical")
         trace[2].evidence_ids.append(ev.evidence_id)
+        verification=[battery_physics_verification(state, ev.evidence_id)]
         return _finish(DiagnosticResult(
             domain="battery",task="anomaly_localization",decision="diagnose" if abnormal else "monitor",
             detection=DetectionResult(abnormal,confidence,method="robust_cell_to_pack_deviation"),
             localization=LocalizationResult(components=[top] if abnormal else [],channels=[top] if abnormal else [],scores={top:confidence} if abnormal else {}),
-            hypotheses=[DiagnosticHypothesis("cell_imbalance",confidence,evidence_ids=[ev.evidence_id])] if abnormal else [],evidence=[ev],
+            hypotheses=[DiagnosticHypothesis("cell_imbalance",confidence,evidence_ids=[ev.evidence_id])] if abnormal else [],evidence=[ev],verification=verification,
             prognosis=PrognosisResult(risk=risk,horizon=state["latent_health_state"].get("horizon"),uncertainty=state["prognosis_uncertainty"]),
             confidence=confidence,uncertainty=1-confidence,recommended_actions=[f"Inspect {top} sensing and balance state."] if abnormal else [],tool_trace=trace,
             metadata={"ranked_cells":state["ranked_cells"],"window_metadata":state["window_metadata"]}))
@@ -63,11 +65,12 @@ class TurbofanDiagnosticPipeline:
         ev=Evidence("health_index",f"Health index={state['current_health']:.2f}; trend={state['health_slope']:.4g} per cycle.",confidence,
                     {"selected_channels":state["critical_sensors"],"rul_cycles":state["rul_cycles"]},"turbofan-health-evidence","prognostic")
         trace[5].evidence_ids.append(ev.evidence_id)
+        verification=[turbofan_physics_verification(state, ev.evidence_id)]
         return _finish(DiagnosticResult(
             domain="turbofan",task="remaining_useful_life",decision="diagnose" if abnormal else "monitor",
             detection=DetectionResult(abnormal,float(np.clip(max(state["current_health"],0)/float(state.get("failure_threshold",3)),0,1)),method="health_index_trend"),
             localization=LocalizationResult(channels=state["critical_sensors"],scores={name:float(min(abs(state["sensor_slopes"][state["channel_names"].index(name)]),1)) for name in state["critical_sensors"]}),
-            hypotheses=[DiagnosticHypothesis("degradation",confidence,evidence_ids=[ev.evidence_id])] if abnormal else [],evidence=[ev],
+            hypotheses=[DiagnosticHypothesis("degradation",confidence,evidence_ids=[ev.evidence_id])] if abnormal else [],evidence=[ev],verification=verification,
             prognosis=PrognosisResult(remaining_useful_life=state["rul_cycles"],horizon="cycles",uncertainty=state["uncertainty_score"],details={"interval":state["rul_interval"],"method":state["rul_method"]}),
             confidence=confidence,uncertainty=state["uncertainty_score"],recommended_actions=["Track the health trend and inspect critical sensors."] if abnormal else [],tool_trace=trace,
             metadata={"health_index":state["health_index"],"sensor_slopes":dict(zip(state["channel_names"],state["sensor_slopes"].tolist()))}))
@@ -82,10 +85,11 @@ class TransformerDiagnosticPipeline:
         ev=Evidence("multisensor_fusion",f"Fused-waveform kurtosis={state['harmonic_structure']['kurtosis']:.2f}; classifier label={label!r}.",confidence,
                     {"sensor_weights":weights,"feature_image_shape":state["representation_metadata"]["shape"]},"transformer-fusion-evidence","signal")
         trace[4].evidence_ids.append(ev.evidence_id)
+        verification=[transformer_physics_verification(state, ev.evidence_id)]
         return _finish(DiagnosticResult(
             domain="transformer",task="fault_diagnosis",decision=decision,
             detection=DetectionResult(abnormal,state["harmonic_structure"]["anomaly_score"],method="wavelet_multisensor_impulsiveness"),
-            localization=LocalizationResult(channels=[top],scores=weights),hypotheses=[DiagnosticHypothesis(str(label),confidence,evidence_ids=[ev.evidence_id])] if label else [],evidence=[ev],
+            localization=LocalizationResult(channels=[top],scores=weights),hypotheses=[DiagnosticHypothesis(str(label),confidence,evidence_ids=[ev.evidence_id])] if label else [],evidence=[ev],verification=verification,
             confidence=confidence,uncertainty=1-confidence,abstained=abstained,abstain_reason=reason,
             recommended_actions=["Supply a validated fault classifier to label the detected condition."] if abstained else [],tool_trace=trace,
             metadata={"sensor_weights":weights,"feature_image_shape":state["representation_metadata"]["shape"]}))
