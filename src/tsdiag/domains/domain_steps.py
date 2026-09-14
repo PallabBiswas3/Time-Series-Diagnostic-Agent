@@ -220,9 +220,15 @@ def transformer_envelope(s):
 
 
 def transformer_spectral(s):
-    x=s["fused_waveform"]-np.mean(s["fused_waveform"]); width=min(256,len(x)); hop=max(1,width//2)
-    rows=[x[i:i+width] for i in range(0,len(x)-width+1,hop)]; spec=np.stack([np.abs(np.fft.rfft(r*np.hanning(width))) for r in rows],axis=1)
-    corr=np.abs(np.diff(spec,axis=1,prepend=spec[:,:1])); return {"spectral_correlation_map":corr,"cyclic_frequency_axis":np.arange(corr.shape[1]),"carrier_frequency_axis":np.fft.rfftfreq(width,1/s["sampling_rate_hz"])}
+    x=s["fused_waveform"]-np.mean(s["fused_waveform"])
+    # Preserve time resolution for short fixed windows such as SGAH's 100-sample
+    # events. The old width=len(x) produced exactly one FFT frame and therefore
+    # an all-zero temporal-difference representation.
+    width=min(256,max(16,len(x)//2)); hop=max(1,width//2)
+    rows=[x[i:i+width] for i in range(0,len(x)-width+1,hop)]
+    spec=np.stack([np.abs(np.fft.rfft(r*np.hanning(width))) for r in rows],axis=1)
+    corr=np.abs(np.diff(spec,axis=1,prepend=spec[:,:1]))
+    return {"spectral_correlation_map":corr,"cyclic_frequency_axis":np.arange(corr.shape[1]),"carrier_frequency_axis":np.fft.rfftfreq(width,1/s["sampling_rate_hz"])}
 
 
 def transformer_representation(s):
