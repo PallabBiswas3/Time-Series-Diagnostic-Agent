@@ -81,7 +81,6 @@ def _ensure_plugins() -> None:
         domain_registry.register(plugin)
         policy_registry.register(plugin.name, "default", lambda request, p=plugin: p.policy(request), replace=True)
 
-    bearing = domain_registry.resolve("bearing")
     policy_registry.register(
         "bearing", "bearing-policy-v2",
         lambda request: BearingDecisionPolicy(
@@ -98,7 +97,6 @@ def _ensure_plugins() -> None:
         supported_tasks=("root_cause",), replace=True,
     )
 
-    wind = domain_registry.resolve("wind_scada")
     policy_registry.register(
         "wind_scada", "1.0", lambda request: WindScadaDecisionPolicy(version="1.0"),
         supported_tasks=("condition_monitoring",), replace=True,
@@ -182,17 +180,11 @@ def _resolve_models(request: DiagnosticRequest) -> tuple[DiagnosticRequest, dict
     versions: dict[str, str] = {}
     checksums: dict[str, str] = {}
     for slot, ref in request.model_refs.items():
-        record = model_registry.resolve(ref)
+        record = model_registry.resolve(ref, validate=True)
         versions[slot] = record.version
-        checksum = record.metadata.get("checksum")
-        if checksum:
-            checksums[slot] = str(checksum)
+        if record.checksum:
+            checksums[slot] = record.checksum
         if record.artifact is not None:
-            validator = record.metadata.get("validator")
-            if validator is not None:
-                if not callable(validator):
-                    raise TypeError(f"model registry validator for {ref!r} is not callable")
-                validator(record.artifact)
             values[slot] = record.artifact
     return DiagnosticRequest(
         domain=request.domain,
@@ -230,12 +222,17 @@ def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
     try:
         effective_request, model_versions, model_checksums = _resolve_models(request)
         plugin = domain_registry.resolve(effective_request.domain)
-        validated = dict(plugin.validate(effective_request))
-        execution, trace = WorkflowExecutor().run(plugin.workflow(effective_request), validated)
+
+        # Resolve explicit policy references before workflow execution. A bad or
+        # task-incompatible policy must fail cheaply rather than after running a
+        # potentially expensive scientific workflow.
         if effective_request.policy_ref:
             policy = policy_registry.create(effective_request.domain, effective_request.policy_ref, effective_request)
         else:
             policy = plugin.policy(effective_request)
+
+        validated = dict(plugin.validate(effective_request))
+        execution, trace = WorkflowExecutor().run(plugin.workflow(effective_request), validated)
         result = policy.decide(execution, trace)
         if effective_request.task is not None:
             result.task = effective_request.task
@@ -257,7 +254,8 @@ def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
                 raise ValueError(
                     f"requested policy_ref={effective_request.policy_ref!r} but executed policy_version={result.metadata.get('policy_version')!r}"
                 )
-        result.provenance = _provenance(effective_request, result, model_versions, model_checksums)
+        # Hash the caller-provided inputs, not injected in-memory model objects.
+        result.provenance = _provenance(request, result, model_versions, model_checksums)
         return standardize_result(result, pipeline_version=PIPELINE_VERSION)
     except StepExecutionError as exc:
         return _abstain(request.domain, task, f"Pipeline step failed: {exc}", exc.trace)
