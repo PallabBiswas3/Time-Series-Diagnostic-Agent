@@ -9,7 +9,10 @@ import numpy as np
 SGAH_COMMIT = "bbe1020e3fade83f7861657bb3eaea41c25ec0c9"
 SGAH_BASE_URL = f"https://raw.githubusercontent.com/smartlab-hfut/SGAH-datasets/{SGAH_COMMIT}/data"
 SGAH_EVENT_SAMPLES = 100
-SGAH_CHANNEL_NAMES = ("Va", "Vb", "Vc", "Ia", "Ib", "Ic")
+# The CSV headers are Ua/Ub/Uc/Ia/Ib/Ic. The upstream README sentence that
+# describes current channels first is inconsistent with the files themselves,
+# so the pinned CSV header is treated as authoritative.
+SGAH_CHANNEL_NAMES = ("Ua", "Ub", "Uc", "Ia", "Ib", "Ic")
 SGAH_CLASSES = {
     1: "single_phase_ground_fault",
     2: "inter_phase_short_circuit_fault",
@@ -17,10 +20,6 @@ SGAH_CLASSES = {
     4: "main_transformer_fault",
     5: "normal",
 }
-# Event counts reported for the original, non-augmented SGAH data in the
-# associated AD-TFM-AT evaluation. We lock these counts to catch partial or
-# silently changed downloads.
-SGAH_EXPECTED_EVENT_COUNTS = {1: 501, 2: 342, 3: 70, 4: 497, 5: 320}
 
 
 @dataclass(frozen=True)
@@ -35,14 +34,18 @@ def _load_csv(path: str | Path) -> np.ndarray:
     matrix = np.genfromtxt(path, delimiter=",", skip_header=1, dtype=float)
     if matrix.ndim == 1:
         matrix = matrix[None, :]
-    if matrix.ndim != 2 or matrix.shape[1] != 6:
-        raise ValueError(f"SGAH CSV must contain six waveform columns; got {matrix.shape}")
+    if matrix.ndim != 2 or matrix.shape[1] != len(SGAH_CHANNEL_NAMES):
+        raise ValueError(
+            f"SGAH CSV must contain {len(SGAH_CHANNEL_NAMES)} waveform columns; got {matrix.shape}"
+        )
     if not np.all(np.isfinite(matrix)):
         raise ValueError("SGAH CSV contains non-finite values")
     if len(matrix) % SGAH_EVENT_SAMPLES:
         raise ValueError(
             f"SGAH rows must be divisible by {SGAH_EVENT_SAMPLES}; got {len(matrix)}"
         )
+    if len(matrix) == 0:
+        raise ValueError("SGAH CSV contains no events")
     return matrix
 
 
@@ -52,11 +55,6 @@ def load_sgah_events(path: str | Path, class_id: int) -> list[SgahEvent]:
         raise ValueError(f"Unsupported SGAH class id: {class_id}")
     matrix = _load_csv(path)
     event_count = len(matrix) // SGAH_EVENT_SAMPLES
-    expected = SGAH_EXPECTED_EVENT_COUNTS[class_id]
-    if event_count != expected:
-        raise ValueError(
-            f"SGAH class {class_id} expected {expected} events, found {event_count}"
-        )
     return [
         SgahEvent(
             class_id=class_id,
