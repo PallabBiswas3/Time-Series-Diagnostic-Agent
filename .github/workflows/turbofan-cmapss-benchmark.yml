@@ -1,0 +1,122 @@
+name: C-MAPSS Turbofan Benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/tsdiag/datasets/cmapss.py'
+      - 'src/tsdiag/benchmarks/turbofan_cmapss.py'
+      - 'src/tsdiag/domains/runners.py'
+      - 'src/tsdiag/domains/domain_steps.py'
+      - 'src/tsdiag/domains/verification.py'
+      - 'tests/test_cmapss_dataset.py'
+      - '.github/workflows/turbofan-cmapss-benchmark.yml'
+
+concurrency:
+  group: cmapss-turbofan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cmapss-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install package
+        run: python -m pip install -e '.[dev]'
+      - name: Run C-MAPSS schema tests
+        run: pytest -q tests/test_cmapss_dataset.py
+
+  cmapss-real-data:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    needs: cmapss-tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - name: Install package
+        run: python -m pip install -e '.[dev]'
+
+      - name: Restore C-MAPSS cache
+        id: cmapss-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/cmapss
+          key: nasa-cmapss-fd001-fd004-v1
+
+      - name: Download fixed NASA C-MAPSS files on cache miss
+        if: steps.cmapss-cache.outputs.cache-hit != 'true'
+        run: |
+          python - <<'PY'
+          from tsdiag.datasets.cmapss import download_cmapss
+          paths = download_cmapss('data/cmapss')
+          print(f'downloaded {len(paths)} C-MAPSS files')
+          for p in paths:
+              print(p, p.stat().st_size)
+          PY
+
+      - name: Validate frozen C-MAPSS layout
+        run: |
+          python - <<'PY'
+          import json
+          from tsdiag.datasets.cmapss import CMAPSS_SUBSETS, validate_cmapss_subset
+          summaries = [validate_cmapss_subset('data/cmapss', subset) for subset in CMAPSS_SUBSETS]
+          print(json.dumps(summaries, indent=2))
+          expected = {
+              'FD001': (100, 100),
+              'FD002': (260, 259),
+              'FD003': (100, 100),
+              'FD004': (248, 249),
+          }
+          for row in summaries:
+              train_expected, test_expected = expected[row['subset']]
+              if row['train_units'] != train_expected or row['test_units'] != test_expected:
+                  raise SystemExit(f"Unexpected NASA manifest counts: {row}")
+          PY
+
+      - name: Save C-MAPSS cache
+        if: steps.cmapss-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/cmapss
+          key: ${{ steps.cmapss-cache.outputs.cache-primary-key }}
+
+      - name: Run frozen FD001-FD004 RUL benchmark
+        run: |
+          mkdir -p outputs/turbofan_cmapss
+          python - <<'PY'
+          import json
+          from tsdiag.benchmarks.turbofan_cmapss import run_cmapss_benchmark
+
+          payload = run_cmapss_benchmark(
+              'data/cmapss',
+              output_dir='outputs/turbofan_cmapss',
+          )
+          print(json.dumps(payload['summary'], indent=2))
+          print(json.dumps(payload['by_subset'], indent=2))
+
+          if payload['failures']:
+              raise SystemExit(f"Benchmark failures: {payload['failures']}")
+          summary = payload['summary']
+          if summary['case_count'] != 708:
+              raise SystemExit(f"Expected 708 NASA test engines, got {summary['case_count']}")
+          if summary['coverage'] is None or summary['coverage'] < 0.80:
+              raise SystemExit(f"Coverage gate failed: {summary['coverage']}")
+          if summary['rmse_cycles'] is None or summary['rmse_cycles'] > 75.0:
+              raise SystemExit(f"RMSE gate failed: {summary['rmse_cycles']}")
+          PY
+
+      - name: Upload C-MAPSS benchmark artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: turbofan-cmapss-benchmark
+          path: outputs/turbofan_cmapss/**
+          if-no-files-found: warn
