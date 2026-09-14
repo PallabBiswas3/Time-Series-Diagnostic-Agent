@@ -8,12 +8,11 @@ from .models import ToolTraceStep, json_safe
 
 
 class ExecutionTrace(list[ToolTraceStep]):
-    """Chronological trace with stable named lookup.
+    """Chronological hierarchical trace with stable named lookup.
 
-    It intentionally remains list-compatible so existing runners/tests can keep
-    indexing and iterating during the architecture migration. Named lookup uses
-    the latest matching attempt by default, preserving repeated executions in
-    ``steps`` rather than collapsing them into a dictionary.
+    Top-level iteration preserves workflow order. ``flatten()`` walks child steps
+    depth-first so callers can query both workflow and nested legacy/tool steps
+    without maintaining a second trace in result metadata.
     """
 
     def __init__(self, steps: Iterable[ToolTraceStep] = ()):
@@ -23,8 +22,21 @@ class ExecutionTrace(list[ToolTraceStep]):
     def steps(self) -> list[ToolTraceStep]:
         return self
 
-    def get(self, step_id: str, *, occurrence: int = -1) -> ToolTraceStep | None:
-        matches = [step for step in self if step.tool == step_id]
+    def flatten(self) -> list[ToolTraceStep]:
+        rows: list[ToolTraceStep] = []
+
+        def visit(step: ToolTraceStep) -> None:
+            rows.append(step)
+            for child in step.children:
+                visit(child)
+
+        for step in self:
+            visit(step)
+        return rows
+
+    def get(self, step_id: str, *, occurrence: int = -1, recursive: bool = True) -> ToolTraceStep | None:
+        source = self.flatten() if recursive else list(self)
+        matches = [step for step in source if step.tool == step_id]
         if not matches:
             return None
         try:
@@ -32,8 +44,8 @@ class ExecutionTrace(list[ToolTraceStep]):
         except IndexError:
             return None
 
-    def require(self, step_id: str, *, occurrence: int = -1) -> ToolTraceStep:
-        step = self.get(step_id, occurrence=occurrence)
+    def require(self, step_id: str, *, occurrence: int = -1, recursive: bool = True) -> ToolTraceStep:
+        step = self.get(step_id, occurrence=occurrence, recursive=recursive)
         if step is None:
             raise KeyError(f"Required trace step {step_id!r} is absent")
         return step
