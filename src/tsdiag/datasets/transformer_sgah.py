@@ -40,12 +40,8 @@ def _load_csv(path: str | Path) -> np.ndarray:
         )
     if not np.all(np.isfinite(matrix)):
         raise ValueError("SGAH CSV contains non-finite values")
-    if len(matrix) % SGAH_EVENT_SAMPLES:
-        raise ValueError(
-            f"SGAH rows must be divisible by {SGAH_EVENT_SAMPLES}; got {len(matrix)}"
-        )
-    if len(matrix) == 0:
-        raise ValueError("SGAH CSV contains no events")
+    if len(matrix) < SGAH_EVENT_SAMPLES:
+        raise ValueError("SGAH CSV contains no complete 100-sample event")
     return matrix
 
 
@@ -54,13 +50,17 @@ def load_sgah_events(path: str | Path, class_id: int) -> list[SgahEvent]:
     if class_id not in SGAH_CLASSES:
         raise ValueError(f"Unsupported SGAH class id: {class_id}")
     matrix = _load_csv(path)
+    # The pinned source contains at least one trailing partial event. The README
+    # defines an event as exactly 100 samples, so only complete events are used;
+    # missing samples are never padded or synthesized.
     event_count = len(matrix) // SGAH_EVENT_SAMPLES
+    usable = matrix[: event_count * SGAH_EVENT_SAMPLES]
     return [
         SgahEvent(
             class_id=class_id,
             label=SGAH_CLASSES[class_id],
             event_id=i,
-            signal_matrix=matrix[i * SGAH_EVENT_SAMPLES : (i + 1) * SGAH_EVENT_SAMPLES],
+            signal_matrix=usable[i * SGAH_EVENT_SAMPLES : (i + 1) * SGAH_EVENT_SAMPLES],
         )
         for i in range(event_count)
     ]
@@ -70,12 +70,16 @@ def validate_sgah_root(root: str | Path) -> list[dict]:
     root = Path(root)
     rows: list[dict] = []
     for class_id, label in SGAH_CLASSES.items():
-        events = load_sgah_events(root / f"{class_id}-data.csv", class_id)
+        path = root / f"{class_id}-data.csv"
+        matrix = _load_csv(path)
+        events = load_sgah_events(path, class_id)
         rows.append(
             {
                 "class_id": class_id,
                 "label": label,
+                "total_rows": int(len(matrix)),
                 "event_count": len(events),
+                "discarded_trailing_rows": int(len(matrix) % SGAH_EVENT_SAMPLES),
                 "samples_per_event": SGAH_EVENT_SAMPLES,
                 "channels": list(SGAH_CHANNEL_NAMES),
             }
