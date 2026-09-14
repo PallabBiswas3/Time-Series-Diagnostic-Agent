@@ -38,9 +38,14 @@ def get_input_schema(domain: str) -> DomainInputSchema:
 
 def _abstain(domain: str, task: str, reason: str, trace: list[ToolTraceStep] | None = None) -> DiagnosticResult:
     return standardize_result(DiagnosticResult(
-        domain=domain, task=task, decision="abstain",
+        domain=domain,
+        task=task,
+        decision="abstain",
         detection=DetectionResult(abnormal=None, method="pipeline_validation"),
-        confidence=0.0, uncertainty=None, abstained=True, abstain_reason=reason,
+        confidence=0.0,
+        uncertainty=None,
+        abstained=True,
+        abstain_reason=reason,
         tool_trace=trace or [ToolTraceStep("input_validation", status="warning", details={"reason": reason})],
         metadata={"pipeline_version": PIPELINE_VERSION, "allow_confidence_complement_uncertainty": False},
     ), pipeline_version=PIPELINE_VERSION)
@@ -53,6 +58,7 @@ def _with_task(result: DiagnosticResult, task: str | None) -> DiagnosticResult:
 
 
 def _ensure_plugins() -> None:
+    from .domains.battery_pack_plugin import BatteryPackDecisionPolicy
     from .domains.battery_plugin import BatteryPlugin
     from .domains.bearing_plugin import BearingDecisionPolicy, BearingPlugin
     from .domains.compat_plugins import PassthroughDecisionPolicy, TurbofanPlugin
@@ -81,16 +87,16 @@ def _ensure_plugins() -> None:
         "wind_scada", "1.0", lambda request: WindScadaDecisionPolicy(version="1.0"),
         supported_tasks=("condition_monitoring",), replace=True,
     )
-
-    battery = domain_registry.resolve("battery")
     policy_registry.register(
-        "battery", "compat-1.0",
-        lambda request, p=battery: PassthroughDecisionPolicy("battery_analysis", p.workflow_version, request, version="compat-1.0"),
-        supported_tasks=("anomaly_localization",), replace=True,
+        "battery", "battery-pack-policy-v2", lambda request: BatteryPackDecisionPolicy(),
+        supported_tasks=("anomaly_localization", "fault_diagnosis"), replace=True,
     )
     policy_registry.register(
         "battery", "capacity-prognosis-policy-v1",
-        lambda request, p=battery: PassthroughDecisionPolicy("battery_prognosis", p.workflow_version, request, version="capacity-prognosis-policy-v1"),
+        lambda request: PassthroughDecisionPolicy(
+            "battery_prognosis", "prognosis-1.0", request,
+            version="capacity-prognosis-policy-v1",
+        ),
         supported_tasks=("prognosis",), replace=True,
     )
 
@@ -141,14 +147,15 @@ def _git_sha() -> str | None:
 
 
 def _resolve_models(request: DiagnosticRequest) -> tuple[DiagnosticRequest, dict[str, str], dict[str, str]]:
-    if not request.model_refs: return request, {}, {}
+    if not request.model_refs:
+        return request, {}, {}
     values = dict(request.inputs); versions: dict[str, str] = {}; checksums: dict[str, str] = {}
     for slot, ref in request.model_refs.items():
-        record = model_registry.resolve(ref, validate=True)
-        versions[slot] = record.version
+        record = model_registry.resolve(ref, validate=True); versions[slot] = record.version
         if record.checksum: checksums[slot] = record.checksum
         if record.artifact is not None: values[slot] = record.artifact
-    return DiagnosticRequest(domain=request.domain, task=request.task, inputs=values, policy_ref=request.policy_ref, model_refs=request.model_refs, run_context=request.run_context), versions, checksums
+    return DiagnosticRequest(domain=request.domain, task=request.task, inputs=values, policy_ref=request.policy_ref,
+                             model_refs=request.model_refs, run_context=request.run_context), versions, checksums
 
 
 def _provenance(request: DiagnosticRequest, result: DiagnosticResult, model_versions: dict[str, str], model_checksums: dict[str, str]) -> RunProvenance:
@@ -170,9 +177,13 @@ def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
         plugin = domain_registry.resolve(effective_request.domain)
         policy = policy_registry.create(effective_request.domain, effective_request.policy_ref, effective_request) if effective_request.policy_ref else plugin.policy(effective_request)
         validated = dict(plugin.validate(effective_request))
-        execution, trace = WorkflowExecutor().run(plugin.workflow(effective_request), validated)
+        workflow = plugin.workflow(effective_request)
+        execution, trace = WorkflowExecutor().run(workflow, validated)
         result = policy.decide(execution, trace)
         if effective_request.task is not None: result.task = effective_request.task
+        # The workflow object is the authority for workflow provenance. Policies
+        # may add metadata, but must not stamp a conflicting workflow version.
+        result.metadata["workflow_version"] = workflow.version
         result.metadata.setdefault("pipeline_version", PIPELINE_VERSION)
         if effective_request.run_context is not None:
             result.metadata.setdefault("run_context", {
@@ -203,9 +214,9 @@ class DiagnosticPipeline:
         domain = str(domain).strip().lower()
         if domain not in DOMAIN_PACKS: raise KeyError(f"Unknown domain {domain!r}. Available: {sorted(DOMAIN_PACKS)}")
         values = dict(metadata or {}); values.update(inputs)
-        default_task = str(task or DOMAIN_PACKS[domain].tasks[0].value)
-        supported_tasks = {row.value for row in DOMAIN_PACKS[domain].tasks}
-        if task is not None and task not in supported_tasks: return _abstain(domain, default_task, f"Unsupported task {task!r}; available tasks: {sorted(supported_tasks)}")
+        default_task = str(task or DOMAIN_PACKS[domain].tasks[0].value); supported_tasks = {row.value for row in DOMAIN_PACKS[domain].tasks}
+        if task is not None and task not in supported_tasks:
+            return _abstain(domain, default_task, f"Unsupported task {task!r}; available tasks: {sorted(supported_tasks)}")
         missing = [key for key in DOMAIN_PACKS[domain].required_metadata if values.get(key) is None]
         if domain == "battery" and default_task == "prognosis" and values.get("cycle_index") is not None: missing = []
         if missing: return _abstain(domain, default_task, f"Missing required metadata: {', '.join(missing)}")
