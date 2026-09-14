@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from tsdiag.models import DetectionResult, DiagnosticResult, Evidence, ToolTraceStep
 from tsdiag.result_contract import result_summary, standardize_result
@@ -17,7 +18,7 @@ def test_standardizer_adds_common_result_envelope():
 
     standardized = standardize_result(result)
 
-    assert standardized.uncertainty == 0.2
+    assert standardized.uncertainty == pytest.approx(0.2)
     assert standardized.evidence[0].evidence_id == "bearing-evidence-1"
     assert standardized.evidence[0].provenance["domain"] == "bearing"
     assert standardized.metadata["contract"]["name"] == "DiagnosticResult"
