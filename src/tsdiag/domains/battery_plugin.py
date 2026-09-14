@@ -4,14 +4,13 @@ from typing import Any, Mapping
 
 from ..contracts import DiagnosticRequest
 from ..execution import Step, Workflow
+from .battery_pack_plugin import BatteryPackPlugin
 from .battery_prognosis_runner import BatteryPrognosticPipeline
-from .compat_plugins import BatteryPlugin as _PackBatteryPlugin, PassthroughDecisionPolicy
+from .compat_plugins import PassthroughDecisionPolicy
 
 
-class BatteryPlugin(_PackBatteryPlugin):
-    """Battery plugin covering pack diagnosis and capacity-history prognosis."""
-
-    workflow_version = "1.0"
+class BatteryPlugin(BatteryPackPlugin):
+    """Task-aware battery plugin: decomposed pack diagnosis plus capacity prognosis."""
 
     @staticmethod
     def _is_prognosis(request: DiagnosticRequest) -> bool:
@@ -43,23 +42,12 @@ class BatteryPlugin(_PackBatteryPlugin):
             )
             return {"battery_prognosis": result}
 
-        return Workflow(
-            (Step("battery_prognosis", prognosis, version="capacity-history-v2"),),
-            version=self.workflow_version,
-        )
+        return Workflow((Step("battery_prognosis", prognosis, version="capacity-history-v2"),), version="prognosis-1.0")
 
-    def policy(self, request: DiagnosticRequest) -> PassthroughDecisionPolicy:
+    def policy(self, request: DiagnosticRequest):
         if self._is_prognosis(request):
             return PassthroughDecisionPolicy(
-                "battery_prognosis",
-                self.workflow_version,
-                request,
+                "battery_prognosis", "prognosis-1.0", request,
                 version="capacity-prognosis-policy-v1",
             )
-        policy = super().policy(request)
-        return PassthroughDecisionPolicy(
-            policy.result_key,
-            self.workflow_version,
-            request,
-            version=policy.version,
-        )
+        return super().policy(request)
