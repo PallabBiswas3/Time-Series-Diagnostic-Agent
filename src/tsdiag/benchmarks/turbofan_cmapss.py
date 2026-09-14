@@ -15,6 +15,7 @@ from ..datasets.cmapss import (
     load_cmapss_trajectories,
 )
 from ..domains.runners import TurbofanDiagnosticPipeline
+from ..tools.turbofan_rul import TrainOnlyTurbofanRULModel, TurbofanTrainingTrajectory
 
 
 @dataclass
@@ -33,11 +34,10 @@ class CmapssRulCase:
 
 
 def _nasa_score(error: float) -> float:
-    # Standard PHM/C-MAPSS asymmetric score: late/optimistic RUL estimates are
-    # penalized more strongly than conservative early warnings.
-    if error < 0:
-        return float(np.exp(-error / 13.0) - 1.0)
-    return float(np.exp(error / 10.0) - 1.0)
+    # Standard PHM/C-MAPSS asymmetric score. Clamp only the floating-point
+    # exponent to avoid numerical overflow; this never changes the RUL model.
+    exponent = (-error / 13.0) if error < 0 else (error / 10.0)
+    return float(np.exp(min(float(exponent), 700.0)) - 1.0)
 
 
 def _summarize(rows: list[CmapssRulCase]) -> dict:
@@ -59,26 +59,81 @@ def _summarize(rows: list[CmapssRulCase]) -> dict:
     }
 
 
+def _training_rows(trajectories):
+    return [
+        TurbofanTrainingTrajectory(
+            unit_id=int(row.unit_id),
+            cycle_index=row.cycle_index,
+            sensors=row.sensors,
+        )
+        for row in trajectories
+    ]
+
+
+def _development_validation(trajectories) -> dict:
+    """Deterministic unit holdout using training data only.
+
+    Units divisible by five form the development holdout. Each is observed at
+    70% of its run-to-failure history, and the target is the remaining cycles in
+    that same training trajectory. No published test RUL target is consulted.
+    """
+    fit_rows = [row for row in trajectories if int(row.unit_id) % 5 != 0]
+    holdout = [row for row in trajectories if int(row.unit_id) % 5 == 0]
+    model = TrainOnlyTurbofanRULModel().fit(_training_rows(fit_rows))
+    errors = []
+    for row in holdout:
+        endpoint = max(model.minimum_history, int(np.floor(0.70 * len(row.cycle_index))))
+        endpoint = min(endpoint, len(row.cycle_index) - 1)
+        if endpoint < model.minimum_history:
+            continue
+        pred = model.predict_rul(row.sensors[:endpoint], row.cycle_index[:endpoint])
+        truth = float(row.cycle_index[-1] - row.cycle_index[endpoint - 1])
+        errors.append(pred - truth)
+    signed = np.asarray(errors, dtype=float)
+    return {
+        "holdout_unit_count": len(holdout),
+        "evaluable_unit_count": int(len(signed)),
+        "rmse_cycles": None if not signed.size else float(np.sqrt(np.mean(signed**2))),
+        "mae_cycles": None if not signed.size else float(np.mean(np.abs(signed))),
+        "mean_signed_error_cycles": None if not signed.size else float(np.mean(signed)),
+        "split_rule": "unit_id % 5 == 0; prediction at 70% of full training lifetime",
+    }
+
+
 def run_cmapss_benchmark(
     data_dir: str | Path,
     *,
     subsets: tuple[str, ...] = CMAPSS_SUBSETS,
     output_dir: str | Path | None = None,
 ) -> dict:
-    """Evaluate the deterministic public turbofan pipeline on NASA C-MAPSS.
+    """Train on C-MAPSS run-to-failure trajectories and evaluate frozen test RUL.
 
-    The pipeline sees only each test engine's observed trajectory. NASA RUL
-    labels are consumed exclusively here in the benchmark/evaluation layer.
+    Model fitting and development validation use only train_<subset>.txt. The
+    published RUL_<subset>.txt values are loaded only after the train-only model
+    has been fitted with fixed hyperparameters.
     """
     root = Path(data_dir)
     cases: list[CmapssRulCase] = []
     failures: list[dict] = []
     by_subset: dict[str, dict] = {}
+    development_validation: dict[str, dict] = {}
+    training_metadata: dict[str, dict] = {}
 
     for subset in tuple(str(s).upper() for s in subsets):
         subset_rows: list[CmapssRulCase] = []
         try:
+            train_trajectories = load_cmapss_trajectories(root / f"train_{subset}.txt", subset)
+            development_validation[subset] = _development_validation(train_trajectories)
+
+            model = TrainOnlyTurbofanRULModel().fit(_training_rows(train_trajectories))
+            training_metadata[subset] = {
+                "training_unit_count": len(train_trajectories),
+                "training_sample_count": model.training_sample_count_,
+                "maximum_training_rul": model.maximum_training_rul_,
+            }
+
             trajectories = load_cmapss_trajectories(root / f"test_{subset}.txt", subset)
+            # Test labels are deliberately loaded only after model fitting.
             truth = load_cmapss_rul(root / f"RUL_{subset}.txt")
             if len(trajectories) != len(truth):
                 raise ValueError(
@@ -92,6 +147,7 @@ def run_cmapss_benchmark(
                     list(CMAPSS_SENSOR_NAMES),
                     trajectory.cycle_index,
                     operating_conditions=trajectory.operating_settings,
+                    trained_rul_model=model,
                 )
                 runtime = perf_counter() - started
                 pred = (
@@ -128,12 +184,15 @@ def run_cmapss_benchmark(
         "protocol": {
             "subsets": [str(s).upper() for s in subsets],
             "prediction_time": "End of each published test trajectory",
-            "label_isolation": "RUL labels are used only in this benchmark module, never by production diagnosis code.",
+            "label_isolation": "Published test RUL labels are loaded only after fixed train-only model fitting and are used only for evaluation.",
             "sensor_channels": list(CMAPSS_SENSOR_NAMES),
             "operating_settings": 3,
-            "model": "deterministic public turbofan health-index/RUL baseline",
-            "threshold_tuning": "No C-MAPSS test RUL labels are used to tune thresholds or model parameters.",
+            "model": "fixed HistGradientBoosting train-only RUL adapter using current/recent sensor state and trend features",
+            "development_validation": "Deterministic unit holdout from training trajectories before test evaluation.",
+            "threshold_tuning": "No C-MAPSS test RUL labels are used to tune thresholds, features, or hyperparameters.",
         },
+        "development_validation": development_validation,
+        "training_metadata": training_metadata,
         "summary": _summarize(cases),
         "by_subset": by_subset,
         "cases": [asdict(row) for row in cases],
