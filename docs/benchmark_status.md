@@ -7,8 +7,8 @@ This table distinguishes validated real-data evidence from implemented-but-not-y
 | Process / TEP | PCA/DPCA monitoring, contribution, temporal evidence, Granger/topology root-cause ranking | Validated regression benchmark | Fixed Braatz TEP workflow with root-cause regression gates | Continue improving verification without changing frozen gates post hoc |
 | Bearing / CWRU | Spectral kurtosis, resonance band, Hilbert envelope, BPFO/BPFI/BSF/FTF family matching | Validated real-data baseline | 16 fixed CWRU records; 31.25% coverage, 68.75% abstention, 100% covered accuracy, 0% normal false alarms | Improve coverage using a predeclared methodology on independent development data |
 | Wind SCADA / CARE v6 | Regime-aware residual diagnostics, persistence/change-point evidence, physics checks | Validated real-data workflow | CARE v6 benchmark and wind-specific tests are green | Strengthen subsystem localization and prospective validation |
-| Battery | Cell-to-pack voltage/temperature deviation plus preliminary prognosis | Pipeline implemented; NASA prognosis baseline intentionally not merged | Existing NASA baseline has censoring-safety weaknesses | Redesign censor-aware prognosis/evaluation before merge |
-| Turbofan | Sensor trend screening, health index, linear/trained RUL adapter | Executable baseline only | Synthetic/public pipeline tests | Add frozen real-data turbofan benchmark and RUL metrics |
+| Battery | Cell-to-pack diagnostics plus causal capacity-trajectory prognosis | Real-data evaluated baseline; not research-ready | NASA B0005/B0006/B0007/B0018 at cutpoints 50/70/90/110: exact-event coverage 90%, MAE 14.89 cycles, RMSE 17.92 cycles; interval coverage 77.8%; B0007 right-censor interval compatibility 50% after multiscale uncertainty calibration | Do not tune further on the same four-cell frozen set; validate a materially different prognosis model on independent development/holdout data before stronger claims |
+| Turbofan | Sensor trend screening, health index, linear/trained RUL adapter | Executable baseline only | Synthetic/public pipeline tests | Add frozen NASA C-MAPSS real-data benchmark and RUL metrics |
 | Transformer | Wavelet denoising, correlation weighting, multisensor fusion, optional classifier | Executable baseline only | Synthetic/public pipeline tests | Add frozen real-data transformer fault benchmark and classifier validation |
 
 ## CWRU locked post-refactor baseline
@@ -25,6 +25,25 @@ The current architecture-only bearing refactor preserves the following fixed CWR
 - fault detection rate: 0.4167
 
 These numbers should be treated as a baseline, not a final performance claim. The low coverage is a known scientific weakness and must not be improved by tuning directly against the frozen evaluation set.
+
+## NASA battery censor-aware baseline
+
+The battery prognosis path now has a dedicated real-data workflow over B0005, B0006, B0007 and B0018. Predictions use only history available at each cutpoint. Exact-EOL cells are scored with point RUL error; cells whose records end above the 1.4 Ah EOL threshold are treated as right-censored and never assigned a fabricated point target.
+
+Locked post-calibration results:
+
+- evaluated cases: 14
+- exact-EOL cases: 10
+- exact-EOL prediction coverage: 0.90
+- exact-EOL MAE: 14.89 cycles
+- exact-EOL RMSE: 17.92 cycles
+- exact-event interval coverage: 0.778
+- right-censored prediction coverage: 1.00
+- B0007 one-sided interval compatibility: 0.50
+- mean B0007 one-sided violation: 6.69 cycles
+- maximum B0007 one-sided violation: 18.83 cycles
+
+The uncertainty method was changed once, from a narrow residual/slope approximation to regression-parameter uncertainty plus fixed-window (20, 40, full-history) model disagreement. Because the same frozen four-cell set exposed the remaining weakness, it should now be treated as evaluation data rather than tuned repeatedly. Battery prognosis is therefore **real-data evaluated, but not research-ready**.
 
 ## Validation levels
 
