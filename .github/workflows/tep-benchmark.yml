@@ -1,6 +1,17 @@
 name: Tennessee Eastman Benchmark
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/tsdiag/domains/process_runner.py"
+      - "src/tsdiag/benchmarks/tep.py"
+      - "src/tsdiag/tools/**"
+      - "src/tsdiag/config/**"
+      - "tests/test_process*"
+      - "tests/test_tep*"
+      - ".github/workflows/tep-benchmark.yml"
   pull_request:
     paths:
       - "src/tsdiag/**"
