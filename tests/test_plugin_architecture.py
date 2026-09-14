@@ -84,8 +84,6 @@ def test_structured_wind_request_uses_plugin_policy(monkeypatch):
 
 
 def test_all_six_domain_plugins_are_registered_after_diagnose():
-    # Any structured request initializes the full plugin registry. Invalid data
-    # is fine here because registration precedes validation.
     diagnose(DiagnosticRequest(domain="bearing", task="fault_diagnosis", inputs={}))
     assert domain_registry.names() == (
         "battery", "bearing", "process", "transformer", "turbofan", "wind_scada"
@@ -119,12 +117,34 @@ def test_versioned_policy_ref_and_model_version_provenance():
     ))
 
     assert result.decision in {"diagnose", "monitor"}
-    assert result.metadata["workflow_version"] == "compat-1.0"
+    # Battery now has a task-aware plugin workflow (pack diagnosis + prognosis),
+    # while this request intentionally selects the frozen compatibility policy.
+    assert result.metadata["workflow_version"] == "1.0"
     assert result.metadata["policy_version"] == "compat-1.0"
     assert result.metadata["policy_ref"] == "compat-1.0"
     assert result.metadata["resolved_model_versions"] == {"health_model": "test-v1"}
     assert result.metadata["compatibility_adapter"] is True
     assert result.metadata["outer_workflow_trace"][0]["step"] == "battery_analysis"
-    # Preserve detailed inner execution history rather than replacing it with
-    # the single compatibility workflow step.
     assert len(result.tool_trace) > 1
+
+
+def test_structured_battery_prognosis_uses_task_specific_policy():
+    cycles = np.arange(1, 61, dtype=float)
+    capacity = 2.0 - 0.006 * cycles
+    result = diagnose(DiagnosticRequest(
+        domain="battery",
+        task="prognosis",
+        policy_ref="capacity-prognosis-policy-v1",
+        inputs={
+            "cycle_index": cycles,
+            "capacity_ah": capacity,
+            "battery_id": "fixture",
+            "eol_capacity_ah": 1.4,
+        },
+    ))
+
+    assert result.task == "prognosis"
+    assert result.prognosis is not None
+    assert result.metadata["workflow_version"] == "1.0"
+    assert result.metadata["policy_version"] == "capacity-prognosis-policy-v1"
+    assert result.metadata["outer_workflow_trace"][0]["step"] == "battery_prognosis"
