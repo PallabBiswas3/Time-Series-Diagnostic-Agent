@@ -26,7 +26,7 @@ from .models import (
 from .registry import domain_registry
 from .result_contract import standardize_result
 
-PIPELINE_VERSION = "1.1.0"
+PIPELINE_VERSION = "1.0.0"
 
 DOMAIN_INPUT_SCHEMAS = {
     "bearing": DomainInputSchema("bearing", (InputField("signal"), InputField("sampling_rate_hz"), InputField("fault_frequencies", False))),
