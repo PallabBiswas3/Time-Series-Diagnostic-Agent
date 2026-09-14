@@ -60,13 +60,8 @@ def _with_task(result: DiagnosticResult, task: str | None) -> DiagnosticResult:
 def _ensure_plugins() -> None:
     from .domains.battery_plugin import BatteryPlugin
     from .domains.bearing_plugin import BearingDecisionPolicy, BearingPlugin
-    from .domains.compat_plugins import (
-        PassthroughDecisionPolicy,
-        ProcessDecisionPolicy,
-        ProcessPlugin,
-        TransformerPlugin,
-        TurbofanPlugin,
-    )
+    from .domains.compat_plugins import PassthroughDecisionPolicy, ProcessDecisionPolicy, ProcessPlugin, TurbofanPlugin
+    from .domains.transformer_plugin import TransformerDecisionPolicy, TransformerPlugin
     from .domains.wind_scada_plugin import WindScadaDecisionPolicy, WindScadaPlugin
 
     plugins = (
@@ -121,10 +116,9 @@ def _ensure_plugins() -> None:
         supported_tasks=("remaining_useful_life", "prognosis", "condition_monitoring"), replace=True,
     )
 
-    transformer = domain_registry.resolve("transformer")
     policy_registry.register(
-        "transformer", "compat-1.0",
-        lambda request, p=transformer: PassthroughDecisionPolicy("transformer_analysis", p.workflow_version, request, version="compat-1.0"),
+        "transformer", "transformer-policy-v2",
+        lambda request: TransformerDecisionPolicy(request),
         supported_tasks=("fault_diagnosis", "condition_monitoring"), replace=True,
     )
 
@@ -165,9 +159,7 @@ def _git_sha() -> str | None:
     if env_sha:
         return env_sha
     try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=2
-        )
+        completed = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True, timeout=2)
         return completed.stdout.strip() or None
     except Exception:
         return None
@@ -222,10 +214,6 @@ def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
     try:
         effective_request, model_versions, model_checksums = _resolve_models(request)
         plugin = domain_registry.resolve(effective_request.domain)
-
-        # Resolve explicit policy references before workflow execution. A bad or
-        # task-incompatible policy must fail cheaply rather than after running a
-        # potentially expensive scientific workflow.
         if effective_request.policy_ref:
             policy = policy_registry.create(effective_request.domain, effective_request.policy_ref, effective_request)
         else:
@@ -254,7 +242,6 @@ def _diagnose_request(request: DiagnosticRequest) -> DiagnosticResult:
                 raise ValueError(
                     f"requested policy_ref={effective_request.policy_ref!r} but executed policy_version={result.metadata.get('policy_version')!r}"
                 )
-        # Hash the caller-provided inputs, not injected in-memory model objects.
         result.provenance = _provenance(request, result, model_versions, model_checksums)
         return standardize_result(result, pipeline_version=PIPELINE_VERSION)
     except StepExecutionError as exc:
