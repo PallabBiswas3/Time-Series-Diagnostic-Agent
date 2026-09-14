@@ -7,6 +7,7 @@ on:
     paths:
       - 'src/tsdiag/datasets/cmapss.py'
       - 'src/tsdiag/benchmarks/turbofan_cmapss.py'
+      - 'src/tsdiag/tools/turbofan_rul.py'
       - 'src/tsdiag/domains/runners.py'
       - 'src/tsdiag/domains/domain_steps.py'
       - 'src/tsdiag/domains/verification.py'
