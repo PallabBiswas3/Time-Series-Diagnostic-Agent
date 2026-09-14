@@ -1,6 +1,18 @@
 name: CWRU Bearing Benchmark
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "src/tsdiag/datasets/bearing_cwru.py"
+      - "src/tsdiag/benchmarks/bearing_cwru.py"
+      - "src/tsdiag/domains/bearing_runner.py"
+      - "src/tsdiag/tools/bearing.py"
+      - "src/tsdiag/tools/signal.py"
+      - "scripts/run_bearing_cwru_benchmark.py"
+      - "tests/test_bearing*"
+      - ".github/workflows/bearing-cwru-benchmark.yml"
   pull_request:
     paths:
       - "src/tsdiag/datasets/bearing_cwru.py"
