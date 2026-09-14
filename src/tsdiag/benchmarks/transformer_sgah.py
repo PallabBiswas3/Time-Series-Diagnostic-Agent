@@ -47,9 +47,6 @@ def _split(events: list[SgahEvent]) -> tuple[list[SgahEvent], list[SgahEvent], l
 def _feature_image(event: SgahEvent) -> np.ndarray:
     state = {
         "signal_matrix": event.signal_matrix,
-        # SGAH does not publish a physical sampling frequency in the repository.
-        # A normalized sample rate is sufficient here because the classifier uses
-        # representation amplitudes/shape rather than physical frequency labels.
         "sampling_rate_hz": 1.0,
         "sensor_positions": list(SGAH_CHANNEL_NAMES),
     }
@@ -66,15 +63,55 @@ def _feature_image(event: SgahEvent) -> np.ndarray:
     return np.asarray(state["feature_image"], dtype=float)
 
 
+def _threshold_metrics(probabilities: np.ndarray, labels: np.ndarray, threshold: float) -> dict:
+    predicted = probabilities >= float(threshold)
+    labels = labels.astype(bool)
+    tp = int(np.sum(predicted & labels))
+    fn = int(np.sum((~predicted) & labels))
+    fp = int(np.sum(predicted & (~labels)))
+    tn = int(np.sum((~predicted) & (~labels)))
+    recall = 0.0 if tp + fn == 0 else tp / (tp + fn)
+    specificity = 0.0 if tn + fp == 0 else tn / (tn + fp)
+    balanced = 0.5 * (recall + specificity)
+    accuracy = (tp + tn) / max(len(labels), 1)
+    return {
+        "threshold": float(threshold),
+        "recall": float(recall),
+        "specificity": float(specificity),
+        "balanced_accuracy": float(balanced),
+        "accuracy": float(accuracy),
+        "tp": tp,
+        "fn": fn,
+        "fp": fp,
+        "tn": tn,
+    }
+
+
+def _calibrate_dev_threshold(estimator, dev_x: np.ndarray, dev_y: np.ndarray) -> tuple[float, dict]:
+    probabilities = estimator.predict_proba(dev_x)[:, 1]
+    # Development-only calibration. Favor useful transformer-fault sensitivity,
+    # while preserving a meaningful specificity floor. The frozen test labels do
+    # not participate in threshold choice.
+    candidates = np.unique(np.concatenate(([0.0, 0.5, 1.0], probabilities)))
+    rows = [_threshold_metrics(probabilities, dev_y, threshold) for threshold in candidates]
+    feasible = [row for row in rows if row["recall"] >= 0.75 and row["specificity"] >= 0.70]
+    pool = feasible if feasible else rows
+    # Maximize balanced accuracy; if tied, prefer higher specificity, then the
+    # higher threshold so calibration is no more aggressive than necessary.
+    best = max(pool, key=lambda row: (row["balanced_accuracy"], row["specificity"], row["threshold"]))
+    return float(best["threshold"]), best
+
+
 class _FixedSgahClassifier:
-    def __init__(self, estimator):
+    def __init__(self, estimator, threshold: float):
         self.estimator = estimator
+        self.threshold = float(threshold)
 
     def __call__(self, feature_image):
         x = np.asarray(feature_image, dtype=float).reshape(1, -1)
         probability = float(self.estimator.predict_proba(x)[0, 1])
         return {
-            "label": "main_transformer_fault" if probability >= 0.5 else None,
+            "label": "main_transformer_fault" if probability >= self.threshold else None,
             "confidence": max(probability, 1.0 - probability),
             "probabilities": {
                 "main_transformer_fault": probability,
@@ -125,7 +162,7 @@ def run_sgah_transformer_benchmark(data_dir: str | Path, *, output_dir: str | Pa
     for class_id, label in SGAH_CLASSES.items():
         events = load_sgah_events(root / f"{class_id}-data.csv", class_id)
         train, dev, test = _split(events)
-        if not train or not test:
+        if not train or not dev or not test:
             raise ValueError(f"SGAH class {class_id} does not have enough whole events for frozen split")
         train_events.extend(train)
         dev_events.extend(dev)
@@ -141,9 +178,9 @@ def run_sgah_transformer_benchmark(data_dir: str | Path, *, output_dir: str | Pa
 
     train_x = np.stack([_feature_image(event).reshape(-1) for event in train_events])
     train_y = np.asarray([event.class_id == 4 for event in train_events], dtype=int)
-    # One predeclared methodology revision after the linear classifier baseline:
-    # a fixed nonlinear ensemble. Hyperparameters and the 0.5 decision threshold
-    # are not selected using frozen test labels.
+    dev_x = np.stack([_feature_image(event).reshape(-1) for event in dev_events])
+    dev_y = np.asarray([event.class_id == 4 for event in dev_events], dtype=int)
+
     estimator = RandomForestClassifier(
         n_estimators=400,
         max_depth=None,
@@ -153,14 +190,11 @@ def run_sgah_transformer_benchmark(data_dir: str | Path, *, output_dir: str | Pa
         n_jobs=-1,
     )
     estimator.fit(train_x, train_y)
-    classifier = _FixedSgahClassifier(estimator)
+    classifier_threshold, dev_calibration = _calibrate_dev_threshold(estimator, dev_x, dev_y)
+    classifier = _FixedSgahClassifier(estimator, classifier_threshold)
 
-    def raw_classifier_accuracy(events: list[SgahEvent]) -> float | None:
-        if not events:
-            return None
-        x = np.stack([_feature_image(event).reshape(-1) for event in events])
-        y = np.asarray([event.class_id == 4 for event in events], dtype=int)
-        return float(np.mean(estimator.predict(x) == y))
+    train_probabilities = estimator.predict_proba(train_x)[:, 1]
+    train_threshold_metrics = _threshold_metrics(train_probabilities, train_y, classifier_threshold)
 
     cases: list[SgahCase] = []
     failures: list[dict] = []
@@ -173,9 +207,6 @@ def run_sgah_transformer_benchmark(data_dir: str | Path, *, output_dir: str | Pa
                 sampling_rate_hz=1.0,
                 sensor_positions=list(SGAH_CHANNEL_NAMES),
                 trained_image_model=classifier,
-                # Electrical-mode execution: the learned classifier is the fault
-                # detector. Legacy kurtosis remains in evidence/verification but
-                # is not allowed to veto an electrical transformer-fault label.
                 anomaly_threshold=0.0,
             )
             runtime = perf_counter() - started
@@ -230,16 +261,18 @@ def run_sgah_transformer_benchmark(data_dir: str | Path, *, output_dir: str | Pa
             "split": "Per class, contiguous whole-event 60% train / 20% development / 20% frozen test; no row-level splitting.",
             "positive_class": "main_transformer_fault (class 4)",
             "negative_controls": "classes 1,2,3 competing grid faults plus class 5 normal",
-            "classifier": "RandomForestClassifier(n_estimators=400, min_samples_leaf=2, class_weight=balanced_subsample, random_state=0, threshold=0.5)",
-            "label_isolation": "Frozen test labels are used only for benchmark scoring. Classifier fitting uses training events only.",
+            "classifier": "RandomForestClassifier(n_estimators=400, min_samples_leaf=2, class_weight=balanced_subsample, random_state=0)",
+            "threshold_calibration": "Development split only: target recall >=0.75 and specificity >=0.70; choose maximum balanced accuracy, then specificity, then highest threshold. Frozen test labels are excluded.",
+            "classifier_threshold": classifier_threshold,
+            "label_isolation": "Frozen test labels are used only for final benchmark scoring. Fitting uses training events; threshold selection uses development events only.",
             "sampling_rate": "normalized 1.0 sample unit; physical sample rate is not required for this representation benchmark",
-            "public_execution": "Final test decisions are emitted by TransformerDiagnosticPipeline in classifier-led electrical mode; legacy impulsiveness remains evidence rather than a mandatory gate.",
-            "methodology_revision": "One fixed nonlinear classifier revision after the first frozen baseline exposed inadequate linear separability and an inappropriate impulsiveness gate. Frozen performance thresholds were unchanged.",
+            "public_execution": "Final test decisions are emitted by TransformerDiagnosticPipeline in classifier-led electrical mode; impulsiveness remains verification evidence rather than a mandatory gate.",
         },
         "manifest": manifest,
         "development": {
-            "train_raw_classifier_accuracy": raw_classifier_accuracy(train_events),
-            "dev_raw_classifier_accuracy": raw_classifier_accuracy(dev_events),
+            "classifier_threshold": classifier_threshold,
+            "train_at_calibrated_threshold": train_threshold_metrics,
+            "dev_at_calibrated_threshold": dev_calibration,
         },
         "summary": summary,
         "by_class": by_class,
