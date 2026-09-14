@@ -30,7 +30,7 @@ class WindScadaDiagnosticPipeline:
         confidence=state["confidence"]; abnormal=state["abnormal"]; top=state["top_channel"]
         ev=Evidence("scada_residuals",f"{state['alarm_fraction']:.1%} of samples exceed the residual limit; strongest channel is {top}.",confidence,
                     {"channel_scores":dict(zip(state["channel_names"],state["channel_scores"].tolist())),"change_points":state["change_points"]},"wind-residual-evidence","statistical")
-        trace.require("residual_changepoint").evidence_ids.append(ev.evidence_id)
+        trace.require("change_point_detection").evidence_ids.append(ev.evidence_id)
         return _finish(DiagnosticResult(domain="wind_scada",task="condition_monitoring",decision="diagnose" if abnormal else "monitor",
             detection=DetectionResult(abnormal,confidence,method="robust_reference_residual",details={"alarm_fraction":state["alarm_fraction"]}),
             localization=LocalizationResult(channels=[top] if abnormal else [],scores={top:confidence} if abnormal else {}),
@@ -123,7 +123,7 @@ class TransformerDiagnosticPipeline:
             ev=Evidence("transformer_electrical_rules",summary,confidence,evidence_payload,"transformer-rule-evidence","physics")
         else:
             ev=Evidence("multisensor_fusion",f"Fused-waveform kurtosis={state['harmonic_structure']['kurtosis']:.2f}; classifier label={label!r}.",confidence,evidence_payload,"transformer-fusion-evidence","signal")
-        trace.require("transformer_feature_image").evidence_ids.append(ev.evidence_id)
+        trace.require("spectral_correlation_representation").evidence_ids.append(ev.evidence_id)
 
         verification=[transformer_physics_verification(state, ev.evidence_id)]
         if hybrid_enabled:
