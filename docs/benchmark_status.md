@@ -9,7 +9,7 @@ This table distinguishes validated real-data evidence from implemented-but-not-y
 | Wind SCADA / CARE v6 | Regime-aware residual diagnostics, persistence/change-point evidence, physics checks | Validated real-data workflow | CARE v6 benchmark and wind-specific tests are green | Strengthen subsystem localization and prospective validation |
 | Battery | Cell-to-pack diagnostics plus causal capacity-trajectory prognosis | Real-data evaluated baseline; not research-ready | NASA B0005/B0006/B0007/B0018 at cutpoints 50/70/90/110: exact-event coverage 90%, MAE 14.89 cycles, RMSE 17.92 cycles; interval coverage 77.8%; B0007 right-censor interval compatibility 50% after multiscale uncertainty calibration | Do not tune further on the same four-cell frozen set; validate a materially different prognosis model on independent development/holdout data before stronger claims |
 | Turbofan / C-MAPSS | Sensor trend screening plus fixed train-only HistGradientBoosting RUL adapter | Validated real-data baseline | Current NASA archive: 707 test engines across FD001-FD004; 100% coverage, MAE 24.08 cycles, RMSE 33.76 cycles; deterministic train-only holdout RMSE 24.77-34.56 cycles | Add calibrated RUL uncertainty/abstention and stronger regime-aware physics verification before research-ready claims |
-| Transformer / SGAH | Wavelet denoising, correlation weighting, multisensor fusion, spectral representation, optional train-only classifier | Real-data evaluated baseline; not validated | Frozen 348-event SGAH test: first linear baseline recall 7.81%, balanced accuracy 51.09%; one predeclared nonlinear revision improved recall to 20.31%, balanced accuracy 58.57%, normal FPR 8.0%, competing-fault FPR 0.54%, but still failed fixed gates | Do not tune again on the frozen SGAH test. Develop a materially different electrical-feature method using train/dev data or an independent transformer dataset before reevaluation |
+| Transformer / SGAH | Deterministic electrical protection rules using RMS, symmetrical components, imbalance, transients, THD and apparent impedance; optional ML fallback remains secondary | Real-data evaluated baseline; not validated | Rule-only SGAH evaluation cleanly rejected normal/competing faults but detected 0/64 transformer faults after dev-calibrated external-fault rejection; earlier ML variants also failed fixed gates | Do not tune further on the repeatedly exposed SGAH test. Refine rules on independent development data or a new transformer dataset, ideally with primary/secondary current measurements for true differential protection |
 
 ## CWRU locked post-refactor baseline
 
@@ -75,34 +75,31 @@ The frozen CI gate is coverage >= 0.80 and RMSE <= 75 cycles. The current baseli
 
 ## SGAH transformer electrical-fault baseline
 
-The transformer path now has a dedicated real-data workflow pinned to `smartlab-hfut/SGAH-datasets` commit `bbe1020e3fade83f7861657bb3eaea41c25ec0c9`. Each event is kept as a whole 100-sample, six-channel waveform; no row-level split is allowed. The pinned class-3 CSV contains 99 trailing rows that do not form a complete event, so they are explicitly discarded rather than padded or synthesized.
+The transformer workflow is pinned to `smartlab-hfut/SGAH-datasets` commit `bbe1020e3fade83f7861657bb3eaea41c25ec0c9`. Each event is a whole 100-sample six-channel `Ua, Ub, Uc, Ia, Ib, Ic` waveform. The class-3 CSV has 99 incomplete trailing rows; they are discarded rather than padded or synthesized. The per-class protocol is contiguous 60% train / 20% development / 20% test, giving 348 test events: 64 main-transformer-fault positives and 284 normal/competing-fault negatives.
 
-The frozen per-class split is contiguous 60% train / 20% development / 20% test. The final frozen test contains 348 events: 64 main-transformer-fault positives and 284 negatives drawn from normal operation plus three competing grid-fault classes. The predeclared gates are transformer-fault recall >= 0.60, balanced accuracy >= 0.70, normal false-positive rate <= 0.15, and competing-fault false-positive rate <= 0.30.
+The fixed benchmark gates remain recall >= 0.60, balanced accuracy >= 0.70, normal false-positive rate <= 0.15, and competing-fault false-positive rate <= 0.30.
 
-The first train-only linear spectral classifier failed the frozen gate:
+Earlier classifier results established that the spectral representation could not meet all gates simultaneously. A conservative nonlinear classifier reached 20.31% recall with 8.0% normal FPR; a more aggressive development-calibrated threshold reached 73.44% recall but raised normal FPR to 56%. Threshold tuning alone was therefore rejected as the solution.
 
-- raw development classifier accuracy: 0.617
-- transformer-fault recall: 0.078
-- specificity: 0.944
-- precision: 0.238
-- balanced accuracy: 0.511
-- normal false-positive rate: 0.090
-- competing-fault false-positive rate: 0.038
+A deterministic protection-inspired rule path was then implemented. It computes three-phase RMS quantities, positive/negative/zero sequence ratios, voltage/current imbalance, transient ratios, THD, apparent impedance, impedance phase spread and power-phase imbalance. The only fitted reference is a robust median/MAD normal-operation envelope from class-5 training events; no fault classifier is fitted. The public transformer pipeline uses these rules as the primary decision whenever a rule reference is supplied, while ML remains an optional fallback.
 
-One methodology revision was then predeclared without changing the frozen gates: a fixed train-only RandomForest classifier on the same spectral representation, with the public pipeline run in classifier-led electrical mode so the legacy impulsiveness heuristic is retained as evidence rather than allowed to veto an electrical fault label. That revision improved discrimination but still failed the frozen recall and balanced-accuracy gates:
+The first rule formulation showed high development transformer recall (89.1%) and low normal FPR (2.0%) but confused 95.1% of competing grid faults with transformer faults. A second development-only calibration added an explicit sequence/asymmetry rejection threshold. On development data it selected disturbance/internal threshold 5.5 and external-asymmetry threshold 2.0, yielding 0% transformer recall, 2.0% normal FPR and 0% competing-fault FPR. The corresponding real-data test result was:
 
-- raw development classifier accuracy: 0.820
-- transformer-fault recall: 0.203
-- specificity: 0.968
-- precision: 0.591
-- F1: 0.302
-- balanced accuracy: 0.586
-- normal false-positive rate: 0.080
-- competing-fault false-positive rate: 0.0054
-- public-result coverage: 0.063
-- abstention rate: 0.937
+- test events: 348
+- true transformer faults: 64
+- true positives: 0
+- false negatives: 64
+- transformer-fault recall: 0.000
+- specificity: 0.9965
+- balanced accuracy: 0.4982
+- normal false-positive rate: 0.010
+- competing-fault false-positive rate: 0.000
+- coverage: 1.00
+- mean runtime: about 2.3 ms/event
 
-The fixed false-positive gates are comfortably satisfied, but sensitivity is inadequate. The SGAH set has therefore already served as frozen evaluation data and must not be used for another round of threshold or hyperparameter tuning. Transformer diagnosis is **real-data evaluated, but not validated/research-ready**. The next method should be designed using training/development data only, preferably with electrical phase-sequence, symmetrical-component, voltage/current imbalance and transient features, or evaluated on an independent transformer dataset before returning to the frozen SGAH test.
+This result is scientifically informative: with only one six-channel voltage/current measurement point, a hard sequence-asymmetry rule can reject external faults extremely well but cannot reliably distinguish the dataset's main-transformer-fault class. True percentage-differential transformer protection cannot be implemented because SGAH does not provide separate primary- and secondary-side CT currents or transformer ratio/vector-group information.
+
+Because the SGAH test partition has now been inspected across multiple method revisions, it should no longer be treated as pristine unseen data for further method selection. The rule engine is retained as an interpretable baseline and verification layer, but transformer diagnosis remains **real-data evaluated, not validated/research-ready**. Further rule development should use independent development data or another transformer dataset, preferably one with primary/secondary currents, transformer parameters and fault-location/type metadata.
 
 ## Validation levels
 
