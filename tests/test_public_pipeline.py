@@ -38,7 +38,7 @@ def test_bearing_runs_through_public_pipeline():
     assert result.tool_trace[-1].tool == "bearing_evidence_fusion"
 
 
-def test_process_adapter_returns_cross_domain_contract():
+def test_process_uses_decomposed_cross_domain_workflow():
     rng = np.random.default_rng(4)
     ref = rng.normal(size=(180, 3))
     cur = rng.normal(size=(100, 3))
@@ -48,8 +48,10 @@ def test_process_adapter_returns_cross_domain_contract():
     assert result.domain == "process"
     assert result.metadata["pipeline_version"] == PIPELINE_VERSION
     assert all(step.duration_seconds is not None for step in result.tool_trace)
-    assert result.tool_trace[0].tool == "process_analysis"
-    assert result.tool_trace[0].children
+    assert result.tool_trace[0].tool == "standardize_against_normal"
+    assert result.tool_trace[-1].tool == "process_diagnosis"
+    assert result.metadata["workflow_version"] == "2.0"
+    assert result.metadata["policy_version"] == "process-policy-v2"
 
 
 def test_wind_scada_pipeline_localizes_persistent_shift():
