@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from tsdiag.datasets.transformer_sgah import SGAH_EVENT_SAMPLES, load_sgah_events
 from tsdiag.domains.domain_steps import transformer_representation, transformer_spectral
@@ -27,11 +26,13 @@ def test_sgah_loader_preserves_whole_event_boundaries(tmp_path):
     assert events[1].event_id == 1
 
 
-def test_sgah_loader_rejects_partial_event(tmp_path):
+def test_sgah_loader_uses_only_complete_events(tmp_path):
+    rows = np.arange(199 * 6, dtype=float).reshape(199, 6)
     path = tmp_path / "5-data.csv"
-    _write_csv(path, np.ones((101, 6), dtype=float))
-    with pytest.raises(ValueError, match="divisible"):
-        load_sgah_events(path, 5)
+    _write_csv(path, rows)
+    events = load_sgah_events(path, 5)
+    assert len(events) == 1
+    np.testing.assert_array_equal(events[0].signal_matrix, rows[:100])
 
 
 def test_transformer_spectral_keeps_multiple_frames_for_100_samples():
