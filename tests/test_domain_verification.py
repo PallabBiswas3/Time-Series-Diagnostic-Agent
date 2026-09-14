@@ -9,12 +9,12 @@ from tsdiag.domains.verification import (
 
 def test_battery_verification_supports_consistent_localization():
     state = {
-        "cell_voltage": np.array([[3.7, 3.55], [3.7, 3.55], [3.7, 3.55]]),
-        "cell_temperature": np.array([[30.0, 31.0], [30.0, 31.0], [30.0, 31.0]]),
-        "cell_ids": ["c0", "c1"],
+        "cell_voltage": np.array([[3.70, 3.52, 3.69], [3.70, 3.51, 3.69], [3.70, 3.50, 3.69]]),
+        "cell_temperature": np.array([[30.0, 32.0, 30.1], [30.0, 32.2, 30.1], [30.0, 32.4, 30.1]]),
+        "cell_ids": ["c0", "c1", "c2"],
         "top_cell": "c1",
-        "delta_voltage": np.array([[0.075, -0.075]] * 3),
-        "delta_temperature": np.array([[-0.5, 0.5]] * 3),
+        "delta_voltage": np.array([[0.01, -0.17, 0.00], [0.01, -0.18, 0.00], [0.01, -0.19, 0.00]]),
+        "delta_temperature": np.array([[-0.1, 1.9, 0.0], [-0.1, 2.1, 0.0], [-0.1, 2.3, 0.0]]),
         "abnormal": True,
     }
     result = battery_physics_verification(state, "ev")
