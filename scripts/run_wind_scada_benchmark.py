@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Run the complete CARE-to-Compare v6 Wind-SCADA benchmark.
 
-This is the canonical PR #11 real-data entrypoint and accepts either the extracted
-CARE directory or the official ZIP archive directly.
+This is the canonical real-data entrypoint and accepts either the extracted CARE
+folder or official ZIP archive. Inference is executed through the public
+``diagnose(DiagnosticRequest(...))`` boundary; labels enter only during scoring.
 
 Usage:
     python scripts/run_wind_scada_benchmark.py --data-dir CARE_To_Compare.zip
@@ -13,7 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from tsdiag.benchmarks.wind_scada import run_care_benchmark
+from tsdiag.benchmarks.wind_scada_public import run_care_benchmark
 
 
 def main() -> None:
