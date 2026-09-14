@@ -6,6 +6,7 @@ import numpy as np
 
 from ..execution import StepExecutor
 from ..models import DetectionResult, DiagnosticHypothesis, DiagnosticResult, Evidence, LocalizationResult, PrognosisResult, VerificationResult
+from ..result_contract import standardize_result
 from .domain_steps import default_domain_tool_registry
 
 
@@ -18,9 +19,7 @@ def _execute(domain: str, values: dict[str, Any]):
 
 
 def _finish(result: DiagnosticResult):
-    result.metadata.setdefault("pipeline_version", "1.0.0")
-    result.validate()
-    return result
+    return standardize_result(result)
 
 
 class WindScadaDiagnosticPipeline:
