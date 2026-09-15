@@ -23,6 +23,15 @@ from .wind_care import (
     load_care_feature_description,
     validate_care_layout,
 )
+from .bearing_paderborn import (
+    PADERBORN_BEARING_LABELS,
+    PADERBORN_SAMPLE_RATE_HZ,
+    PaderbornRecord,
+    discover_paderborn_records,
+    load_paderborn_record,
+    paderborn_specimen_split,
+)
+from .bearing_lenze import LenzeRecord, load_lenze_metadata, load_lenze_record
 
 __all__ = [
     "TEP_CHANNEL_NAMES",
@@ -46,4 +55,13 @@ __all__ = [
     "load_care_event_info",
     "load_care_feature_description",
     "validate_care_layout",
+    "PADERBORN_BEARING_LABELS",
+    "PADERBORN_SAMPLE_RATE_HZ",
+    "PaderbornRecord",
+    "discover_paderborn_records",
+    "load_paderborn_record",
+    "paderborn_specimen_split",
+    "LenzeRecord",
+    "load_lenze_metadata",
+    "load_lenze_record",
 ]

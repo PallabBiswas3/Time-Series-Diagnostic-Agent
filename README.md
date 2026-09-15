@@ -21,7 +21,7 @@ print(result.decision, result.detection, result.localization)
 
 | Domain | Executable baseline | Optional capability |
 | --- | --- | --- |
-| `bearing` | signal quality, spectral kurtosis, envelope analysis, fault-frequency matching | bearing geometry and speed metadata improve labeling |
+| `bearing` | spectral-kurtosis/envelope physics plus Paderborn CNN–FFT feature fusion | Lenze current/encoder validation and persisted PyTorch models |
 | `process` | hybrid DPCA/CVA monitoring, CVA-SVM/FDA diagnosis, contribution, onset, Granger and root-cause ranking | topology and fault catalog |
 | `wind_scada` | robust normal behavior residuals, persistence and change points | supplied healthy reference and physics model |
 | `battery` | cell-to-pack voltage/temperature deviation, localization and risk | trained prognostic model |
@@ -198,7 +198,7 @@ Not every research method is implemented as a full production model yet. For exa
 
 The six deterministic domain paths are complete at pipeline version `1.0.0`. The items below are now benchmark and model-quality improvements rather than prerequisites for running the public pipeline.
 
-1. **Real bearing benchmark** — MFPT/CWRU-style validation and better resonance-band selection.
+1. **Real bearing benchmark** — complete the resumable Paderborn specimen-holdout and Lenze held-out-RPM runs.
 2. **Generic anomaly toolkit** — change-point, autocorrelation, wavelet, spectral-kurtosis/kurtogram, multivariate anomaly taxonomy.
 3. **Learned-model packs** — autoencoder, Transformer and domain-specific fault classifiers.
 4. **Industrial process pack** — causal/root-cause diagnostics for multivariate process systems.

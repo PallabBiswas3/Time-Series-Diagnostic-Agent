@@ -38,6 +38,13 @@ from .process import causal_graph_filter, fault_onset_timing, process_diagnosis,
 from .process_enhanced import pre_post_shift_evidence, root_cause_rank_enhanced, temporal_fault_type_evidence
 from .tep_reasoning import knowledge_guided_root_cause_decision, rank_tep_fault_catalog
 from .tep_cva_classifier import CVAFaultClassifier, fit_cva_fault_classifier
+from .bearing_hybrid import (
+    BearingHybridClassifier,
+    BearingHybridConfig,
+    bearing_fault_frequencies,
+    normalize_waveform_channels,
+    speed_assisted_physics_features,
+)
 from .root_rank_calibration import (
     FEATURE_NAMES,
     RootRankerConfig,
@@ -87,6 +94,8 @@ __all__ = [
     "root_cause_rank", "root_cause_rank_enhanced", "pre_post_shift_evidence",
     "temporal_fault_type_evidence", "rank_tep_fault_catalog", "knowledge_guided_root_cause_decision",
     "CVAFaultClassifier", "fit_cva_fault_classifier",
+    "BearingHybridClassifier", "BearingHybridConfig", "bearing_fault_frequencies",
+    "normalize_waveform_channels", "speed_assisted_physics_features",
     "FEATURE_NAMES", "RootRankerConfig", "build_root_feature_rows", "catalog_feature_scores",
     "cross_validate_root_ranker", "DEFAULT_ROOT_CANDIDATE_LIMIT", "screen_root_candidates",
     "evaluate_root_ranker", "optimize_root_ranker", "predict_root", "score_root_candidates",

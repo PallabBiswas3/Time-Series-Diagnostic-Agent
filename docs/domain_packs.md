@@ -6,7 +6,7 @@ The repository uses one shared diagnostic-agent core plus six domain packs. A do
 
 | Domain | Primary task | Distinctive analysis |
 |---|---|---|
-| `bearing` | mechanical fault localization | impulsiveness, PSD/STFT, spectral kurtosis, resonance filtering, Hilbert envelope, BPFO/BPFI/BSF/FTF matching |
+| `bearing` | mechanical fault localization | Paderborn vibration/current CNN fusion, speed-assisted shaft orders, envelope harmonics, BPFO/BPFI/BSF/FTF matching, Lenze drive validation |
 | `process` | multivariate fault + root cause | hybrid DPCA/CVA detection, optional CVA-SVM/FDA classification, contribution analysis, stationarity, Granger graph, onset/propagation reasoning |
 | `wind_scada` | condition monitoring / early warning | operating regimes, normal-behavior residuals, rolling statistics, correlation drift, change points, physics checks |
 | `battery` | cell anomaly + prognosis | operating-state segmentation, cell-to-pack deviations, spatial consistency, temporal trends, multihorizon spatio-temporal reasoning |
