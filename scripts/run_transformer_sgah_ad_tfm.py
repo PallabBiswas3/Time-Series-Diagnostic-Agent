@@ -3,6 +3,15 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
+
+
+# Allow this repository script to run directly without requiring an editable
+# package installation or a manually configured PYTHONPATH.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = PROJECT_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 from tsdiag.benchmarks.transformer_sgah_ad_tfm import run_sgah_ad_tfm_benchmark
 from tsdiag.datasets.transformer_sgah import download_sgah
@@ -12,7 +21,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train and evaluate the paper-inspired AD-TFM-AT model on SGAH transformer/grid fault events"
     )
-    parser.add_argument("--data-dir", default="data/sgah")
+    parser.add_argument("--data-dir", default="data")
     parser.add_argument("--download", action="store_true")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=256)
