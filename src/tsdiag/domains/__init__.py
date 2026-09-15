@@ -12,6 +12,7 @@ from .runners import (
     TurbofanDiagnosticPipeline,
     WindScadaDiagnosticPipeline,
 )
+from .transformer_ad_tfm import ADTFMTransformerDiagnosticPipeline
 from .wind_scada_runner import (
     WindScadaDiagnosticPipeline as WindScadaBenchmarkPipeline,
     WindScadaDiagnosticResult as WindScadaBenchmarkResult,
@@ -56,5 +57,6 @@ __all__ = [
     "BatteryDiagnosticPipeline",
     "TurbofanDiagnosticPipeline",
     "TransformerDiagnosticPipeline",
+    "ADTFMTransformerDiagnosticPipeline",
     "default_domain_tool_registry",
 ]
