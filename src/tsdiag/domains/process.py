@@ -7,7 +7,7 @@ PROCESS_PACK = DomainPack(
     data_kind=DataKind.MULTIVARIATE_SERIES,
     tasks=(TaskKind.CONDITION_MONITORING, TaskKind.ROOT_CAUSE, TaskKind.FAULT_DIAGNOSIS),
     required_metadata=("channel_names", "sampling_rate_hz"),
-    optional_metadata=("normal_reference", "process_topology", "operating_mode"),
+    optional_metadata=("normal_reference", "process_topology", "operating_mode", "trained_fault_classifier", "monitoring_method"),
     tools=(
         ToolContract("process_data_quality", "Check missingness, constant sensors, scaling and synchronization.", ("signal_matrix", "channel_names"), outputs=("quality_flags", "channel_statistics"), evidence_fields=("quality_flags",), implementation="tsdiag.tools.data_quality_check"),
         ToolContract("standardize_against_normal", "Normalize current data using healthy-reference statistics.", ("signal_matrix", "normal_reference"), outputs=("standardized_signal", "reference_mean", "reference_scale"), preconditions=("reference and current channels must align",), implementation="tsdiag.tools.standardize_against_normal"),

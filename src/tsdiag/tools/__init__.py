@@ -23,15 +23,21 @@ from .multivariate import (
 from .monitoring import (
     MonitoringConfig,
     apply_alarm_persistence,
+    arbitrate_dpca_cva,
     calibrate_monitoring_config,
     calibrated_pca_monitoring,
+    cva_monitoring,
     dpca_monitoring,
+    fit_cva,
+    make_cva_past_future,
     make_lagged_matrix,
     run_monitoring_method,
+    transform_cva,
 )
 from .process import causal_graph_filter, fault_onset_timing, process_diagnosis, root_cause_rank
 from .process_enhanced import pre_post_shift_evidence, root_cause_rank_enhanced, temporal_fault_type_evidence
 from .tep_reasoning import knowledge_guided_root_cause_decision, rank_tep_fault_catalog
+from .tep_cva_classifier import CVAFaultClassifier, fit_cva_fault_classifier
 from .root_rank_calibration import (
     FEATURE_NAMES,
     RootRankerConfig,
@@ -74,11 +80,13 @@ __all__ = [
     "standardize_against_normal", "pca_monitoring", "contribution_analysis",
     "stationarity_analysis", "granger_causality", "detect_operating_regimes",
     "regime_normalization", "residual_analysis", "robust_anomaly_detection",
-    "MonitoringConfig", "apply_alarm_persistence", "calibrate_monitoring_config",
-    "calibrated_pca_monitoring", "dpca_monitoring", "make_lagged_matrix",
+    "MonitoringConfig", "apply_alarm_persistence", "arbitrate_dpca_cva", "calibrate_monitoring_config",
+    "calibrated_pca_monitoring", "cva_monitoring", "dpca_monitoring", "fit_cva",
+    "make_cva_past_future", "make_lagged_matrix", "transform_cva",
     "run_monitoring_method", "causal_graph_filter", "fault_onset_timing",
     "root_cause_rank", "root_cause_rank_enhanced", "pre_post_shift_evidence",
     "temporal_fault_type_evidence", "rank_tep_fault_catalog", "knowledge_guided_root_cause_decision",
+    "CVAFaultClassifier", "fit_cva_fault_classifier",
     "FEATURE_NAMES", "RootRankerConfig", "build_root_feature_rows", "catalog_feature_scores",
     "cross_validate_root_ranker", "DEFAULT_ROOT_CANDIDATE_LIMIT", "screen_root_candidates",
     "evaluate_root_ranker", "optimize_root_ranker", "predict_root", "score_root_candidates",

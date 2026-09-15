@@ -208,6 +208,8 @@ def _summarize(rows: list[TEPFaultMethodResult], methods: list[str]) -> dict[str
         post_rates = [r.post_fault_detection_rate for r in faulty if r.post_fault_detection_rate is not None]
         delays = [r.detection_delay_samples for r in faulty if r.detection_delay_samples is not None]
         localization = [r for r in faulty if r.localization_hit is not None]
+        known_root = [r for r in faulty if r.localization_proxy_targets]
+        root_outputs = [r for r in faulty if r.predicted_root_cause is not None]
         fault_id_matches = [
             r
             for r in faulty
@@ -224,6 +226,10 @@ def _summarize(rows: list[TEPFaultMethodResult], methods: list[str]) -> dict[str
             "mean_detection_delay_minutes": float(np.mean(delays) * TEP_SAMPLE_PERIOD_MIN) if delays else None,
             "knowledge_root_accuracy": float(np.mean([bool(r.localization_hit) for r in localization])) if localization else None,
             "knowledge_root_cases": len(localization),
+            "knowledge_root_coverage": None if not known_root else float(len(localization) / len(known_root)),
+            "knowledge_root_unconditional_accuracy": None if not known_root else float(sum(bool(r.localization_hit) for r in localization) / len(known_root)),
+            "known_root_target_cases": len(known_root),
+            "overall_root_output_coverage": None if not faulty else float(len(root_outputs) / len(faulty)),
             "catalog_fault_id_accuracy": float(np.mean([r.predicted_fault_id == r.fault_id for r in fault_id_matches])) if fault_id_matches else None,
             "catalog_fault_id_cases": len(fault_id_matches),
         }
@@ -297,12 +303,12 @@ def _cv_rows(calibration_result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class TEPBenchmark:
-    """Run calibrated PCA/DPCA and root-cause benchmarks on canonical TEP files."""
+    """Run calibrated PCA/DPCA/CVA and root-cause benchmarks on canonical TEP files."""
 
     def __init__(
         self,
         *,
-        methods: Iterable[str] = ("pca", "dpca"),
+        methods: Iterable[str] = ("pca", "dpca", "cva"),
         variance_target: float = 0.95,
         target_false_alarm_rate: float = 0.05,
         alpha_grid: Iterable[float] = (0.99, 0.995, 0.9975, 0.999, 0.9995),
@@ -430,13 +436,22 @@ class TEPBenchmark:
                             onset_persistence=max(2, cfg.min_consecutive),
                             diagnosis_threshold=0.18,
                             use_knowledge_catalog=True,
+                            monitoring_method="pca",
                         )
+                        detection_override = None
+                        if method == "cva":
+                            detection_override = {
+                                "method": "cva",
+                                "alarm_mask": monitored["alarm_mask"],
+                                "variable_contributions": np.asarray(monitored["variable_contributions"])[:, candidate_idx],
+                            }
                         diagnosis = pipeline.run(
                             subset_current,
                             subset_reference,
                             selected_names,
                             process_topology=topology,
                             fault_catalog=catalog,
+                            detection_override=detection_override,
                         )
                         predicted_root = diagnosis.root_cause
                         confidence = diagnosis.confidence
@@ -549,7 +564,7 @@ def main():
     parser.add_argument("--download", action="store_true", help="download required public Braatz files first")
     parser.add_argument("--faults", nargs="*", help="fault IDs, e.g. --faults 0 1 4 6 or --faults 0,1,4,6")
     parser.add_argument("--diagnostic-faults", nargs="*", help="fault IDs for expensive root-cause analysis")
-    parser.add_argument("--methods", nargs="*", default=["pca", "dpca"], help="monitoring methods: pca dpca")
+    parser.add_argument("--methods", nargs="*", default=["pca", "dpca", "cva"], help="monitoring methods: pca dpca cva")
     parser.add_argument("--diagnostic-method", default="dpca")
     parser.add_argument("--diagnostic-top-k", type=int, default=8)
     parser.add_argument("--maxlag", type=int, default=1)

@@ -22,7 +22,7 @@ The legacy string API remains available during migration. Bearing, Process, Batt
 | Domain | Current execution structure | Status / caveat |
 | --- | --- | --- |
 | Bearing | Fully decomposed named workflow | Shared executor owns signal integrity, features, PSD, spectral kurtosis, filtering, envelope analysis, frequency matching, and fusion. |
-| Process | Decomposed deployable workflow | Existing PCA/contribution/temporal/causal/root-cause science is expressed as named shared-executor steps. The research TEP calibration/ablation protocol remains intentionally separate. |
+| Process | Decomposed deployable workflow | Workflow 3.0 uses DPCA early warning, CVA confirmation, optional persisted CVA-SVM/FDA diagnosis, and CVA contributions feeding temporal/causal/root-cause steps. The reproducible TEP comparison remains a separate research evaluator. |
 | Battery pack | Decomposed named workflow | Uses the canonical Battery `DomainPack` tool names and `battery-pack-policy-v2`. |
 | Battery capacity prognosis | Single task-specific prognostic step | Intentionally atomic because capacity-history prognosis is itself the task. Workflow version is `prognosis-1.0`; policy version is `capacity-prognosis-policy-v1`. |
 | Transformer | Decomposed deployable workflow | Shared executor owns synchronization through decision. SGAH is not used for further architecture/method selection. |

@@ -9,6 +9,7 @@ import numpy as np
 TEP_SOURCE_REPOSITORY = "https://github.com/camaramm/tennessee-eastman-profBraatz"
 TEP_RAW_BASE = "https://raw.githubusercontent.com/camaramm/tennessee-eastman-profBraatz/master"
 TEP_N_VARIABLES = 52
+TEP_TRAIN_FAULT_START = 20  # zero-based in d01.dat...d21.dat training simulations
 TEP_TEST_FAULT_START = 160  # zero-based: samples 0..159 normal, 160.. faulty
 TEP_SAMPLE_PERIOD_MIN = 3.0
 

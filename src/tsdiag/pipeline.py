@@ -21,7 +21,7 @@ PIPELINE_VERSION = "1.1.0"
 
 DOMAIN_INPUT_SCHEMAS = {
     "bearing": DomainInputSchema("bearing", (InputField("signal"), InputField("sampling_rate_hz"), InputField("fault_frequencies", False))),
-    "process": DomainInputSchema("process", (InputField("signal_matrix"), InputField("normal_reference"), InputField("channel_names"), InputField("sampling_rate_hz", False))),
+    "process": DomainInputSchema("process", (InputField("signal_matrix"), InputField("normal_reference"), InputField("channel_names"), InputField("sampling_rate_hz", False), InputField("trained_fault_classifier", False), InputField("monitoring_method", False))),
     "wind_scada": DomainInputSchema("wind_scada", (InputField("signal_matrix"), InputField("channel_names"), InputField("timestamps"), InputField("normal_reference", False))),
     "battery": DomainInputSchema("battery", (InputField("cell_voltage"), InputField("cell_temperature"), InputField("cell_ids"), InputField("timestamps"))),
     "turbofan": DomainInputSchema("turbofan", (InputField("signal_matrix"), InputField("channel_names"), InputField("cycle_index"))),
@@ -80,7 +80,11 @@ def _ensure_plugins() -> None:
         supported_tasks=("fault_diagnosis", "condition_monitoring"), replace=True,
     )
     policy_registry.register(
-        "process", "process-policy-v2", lambda request: ProcessDecisionPolicy(request),
+        "process", "process-policy-v3", lambda request: ProcessDecisionPolicy(request),
+        supported_tasks=("root_cause", "fault_diagnosis", "condition_monitoring"), replace=True,
+    )
+    policy_registry.register(
+        "process", "process-policy-v2", lambda request: ProcessDecisionPolicy(request, version="process-policy-v2"),
         supported_tasks=("root_cause", "fault_diagnosis", "condition_monitoring"), replace=True,
     )
     policy_registry.register(

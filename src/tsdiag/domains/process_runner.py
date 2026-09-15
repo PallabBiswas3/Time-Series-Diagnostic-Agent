@@ -7,11 +7,14 @@ import numpy as np
 
 from ..execution import DomainToolRegistry, StepExecutor
 from ..tools import (
+    MonitoringConfig,
+    arbitrate_dpca_cva,
     causal_graph_filter,
     contribution_analysis,
     fault_onset_timing,
     granger_causality,
     knowledge_guided_root_cause_decision,
+    run_monitoring_method,
     pca_monitoring,
     pre_post_shift_evidence,
     process_diagnosis,
@@ -56,6 +59,10 @@ class ProcessDiagnosticPipeline:
         diagnosis_threshold: float = 0.35,
         minimum_alarm_fraction: float = 0.05,
         use_knowledge_catalog: bool = True,
+        monitoring_method: str = "hybrid",
+        dynamic_lags: int = 2,
+        monitoring_min_consecutive: int = 1,
+        strong_dpca_alarm_fraction: float = 0.20,
     ):
         self.variance_target = variance_target
         self.control_alpha = control_alpha
@@ -66,6 +73,10 @@ class ProcessDiagnosticPipeline:
         self.diagnosis_threshold = diagnosis_threshold
         self.minimum_alarm_fraction = minimum_alarm_fraction
         self.use_knowledge_catalog = use_knowledge_catalog
+        self.monitoring_method = str(monitoring_method).lower()
+        self.dynamic_lags = max(1, int(dynamic_lags))
+        self.monitoring_min_consecutive = max(1, int(monitoring_min_consecutive))
+        self.strong_dpca_alarm_fraction = float(strong_dpca_alarm_fraction)
 
     @staticmethod
     def _causal_input(x: np.ndarray, stationarity: dict[str, Any]) -> tuple[np.ndarray, list[int]]:
@@ -89,6 +100,7 @@ class ProcessDiagnosticPipeline:
         process_topology=None,
         fault_catalog=None,
         timestamps=None,
+        detection_override=None,
     ) -> ProcessDiagnosticResult:
         x = np.asarray(signal_matrix, dtype=float)
         ref = np.asarray(normal_reference, dtype=float)
@@ -126,23 +138,80 @@ class ProcessDiagnosticPipeline:
         standardized = execute("standardize_against_normal", standardize_against_normal, x, ref)
         artifacts["standardization"] = standardized
 
-        pca = execute(
-            "pca_monitoring",
-            pca_monitoring,
-            standardized["standardized_signal"],
-            standardized["standardized_reference"],
-            variance_target=self.variance_target,
-            alpha=self.control_alpha,
-        )
-        artifacts["pca_monitoring"] = pca
+        hybrid_contributions = None
+        if self.monitoring_method == "hybrid":
+            dpca = execute(
+                "dpca_monitoring",
+                run_monitoring_method,
+                standardized["standardized_signal"],
+                standardized["standardized_reference"],
+                MonitoringConfig("dpca", self.control_alpha, self.monitoring_min_consecutive,
+                                 variance_target=self.variance_target, lags=self.dynamic_lags),
+            )
+            cva = execute(
+                "cva_monitoring",
+                run_monitoring_method,
+                standardized["standardized_signal"],
+                standardized["standardized_reference"],
+                MonitoringConfig("cva", self.control_alpha, self.monitoring_min_consecutive,
+                                 variance_target=self.variance_target, lags=self.dynamic_lags),
+            )
+            arbitration = execute(
+                "hybrid_detection_arbitration",
+                arbitrate_dpca_cva,
+                dpca,
+                cva,
+                minimum_alarm_fraction=self.minimum_alarm_fraction,
+                strong_dpca_alarm_fraction=self.strong_dpca_alarm_fraction,
+            )
+            monitor = cva
+            hybrid_contributions = cva["variable_contributions"]
+            artifacts.update({"dpca_monitoring": dpca, "cva_monitoring": cva, "hybrid_detection_arbitration": arbitration})
+        elif self.monitoring_method in {"pca", "dpca", "cva"}:
+            if self.monitoring_method == "pca":
+                monitor = execute(
+                    "pca_monitoring", pca_monitoring,
+                    standardized["standardized_signal"], standardized["standardized_reference"],
+                    variance_target=self.variance_target, alpha=self.control_alpha,
+                )
+            else:
+                monitor = execute(
+                    f"{self.monitoring_method}_monitoring", run_monitoring_method,
+                    standardized["standardized_signal"], standardized["standardized_reference"],
+                    MonitoringConfig(self.monitoring_method, self.control_alpha, self.monitoring_min_consecutive,
+                                     variance_target=self.variance_target, lags=self.dynamic_lags),
+                )
+                if self.monitoring_method == "cva":
+                    hybrid_contributions = monitor["variable_contributions"]
+            arbitration = {
+                "status": "confirmed_fault" if float(np.mean(monitor["alarm_mask"])) >= self.minimum_alarm_fraction else "normal",
+                "reason": f"{self.monitoring_method}_only",
+                "fault_detected": float(np.mean(monitor["alarm_mask"])) >= self.minimum_alarm_fraction,
+                "early_warning": False,
+                "alarm_mask": monitor["alarm_mask"],
+            }
+            artifacts[f"{self.monitoring_method}_monitoring"] = monitor
+        else:
+            raise ValueError("monitoring_method must be 'hybrid', 'pca', 'dpca', or 'cva'")
 
-        alarm_mask = np.asarray(pca["alarm_mask"], dtype=bool)
+        override = dict(detection_override or {})
+        alarm_mask = np.asarray(override.get("alarm_mask", arbitration["alarm_mask"]), dtype=bool)
+        if alarm_mask.shape != (len(x),):
+            raise ValueError("detection_override alarm_mask length mismatch")
         alarm_fraction = float(np.mean(alarm_mask))
         artifacts["detection"] = {
             "alarm_fraction": alarm_fraction,
             "minimum_alarm_fraction": self.minimum_alarm_fraction,
+            "method": str(override.get("method", self.monitoring_method)),
+            "status": str(arbitration.get("status", "unknown")),
+            "early_warning": bool(arbitration.get("early_warning", False)),
+            "reason": arbitration.get("reason"),
         }
-        fault_detected = alarm_fraction >= self.minimum_alarm_fraction
+        fault_detected = (
+            alarm_fraction >= self.minimum_alarm_fraction
+            if override
+            else bool(arbitration.get("fault_detected", alarm_fraction >= self.minimum_alarm_fraction))
+        )
         if not fault_detected:
             return ProcessDiagnosticResult(
                 fault_detected=False,
@@ -157,13 +226,31 @@ class ProcessDiagnosticPipeline:
                 timings=timings,
             )
 
-        contributions = execute(
-            "contribution_analysis",
-            contribution_analysis,
-            standardized["standardized_signal"],
-            pca["pca_state"],
-            alarm_mask,
-        )
+        supplied_contributions = override.get("variable_contributions", hybrid_contributions)
+        if supplied_contributions is not None:
+            sample_contributions = np.asarray(supplied_contributions, dtype=float)
+            if sample_contributions.shape != x.shape:
+                raise ValueError("detection_override variable_contributions shape mismatch")
+            active = sample_contributions[alarm_mask] if np.any(alarm_mask) else sample_contributions[-min(20, len(x)):]
+            values = np.mean(active, axis=0)
+            values = values / (float(np.sum(values)) + 1e-12)
+            order = np.argsort(values)[::-1]
+            suspects = [int(i) for i in order if values[i] >= max(0.1, 1 / (2 * len(values)))]
+            contributions = {
+                "variable_contributions": values,
+                "suspect_variables": suspects,
+                "ranked_indices": order,
+                "method": str(override.get("method", self.monitoring_method)),
+            }
+            trace.append("contribution_analysis")
+        else:
+            contributions = execute(
+                "contribution_analysis",
+                contribution_analysis,
+                standardized["standardized_signal"],
+                pca["pca_state"],
+                alarm_mask,
+            )
         artifacts["contribution_analysis"] = contributions
 
         shift = execute(

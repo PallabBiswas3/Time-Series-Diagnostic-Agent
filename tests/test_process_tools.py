@@ -96,7 +96,9 @@ def test_process_pipeline_detects_synthetic_fault():
     )
     assert result.fault_detected
     assert result.root_cause in {"A", "B", "C"}
-    assert "pca_monitoring" in result.tool_trace
+    assert "dpca_monitoring" in result.tool_trace
+    assert "cva_monitoring" in result.tool_trace
+    assert "hybrid_detection_arbitration" in result.tool_trace
     assert "process_diagnosis" in result.tool_trace
 
 
@@ -120,3 +122,24 @@ def test_process_evaluation_metrics():
     assert metrics["detection_f1"] == 1.0
     assert metrics["root_cause_accuracy"] == 1.0
     assert metrics["detection_delay"] == 8.0
+
+
+def test_process_hybrid_dpca_only_alarm_is_early_warning(monkeypatch):
+    import tsdiag.domains.process_runner as runner_module
+
+    def fake_monitor(signal, reference, config):
+        mask = np.zeros(len(signal), dtype=bool)
+        mask[:10 if config.method == "dpca" else 1] = True
+        result = {"alarm_mask": mask}
+        if config.method == "cva":
+            result["variable_contributions"] = np.ones_like(signal, dtype=float)
+        return result
+
+    monkeypatch.setattr(runner_module, "run_monitoring_method", fake_monitor)
+    ref = np.zeros((100, 3))
+    result = ProcessDiagnosticPipeline(minimum_alarm_fraction=0.05).run(
+        ref.copy(), ref, ["A", "B", "C"]
+    )
+    assert not result.fault_detected
+    assert result.artifacts["detection"]["early_warning"]
+    assert result.artifacts["detection"]["status"] == "early_warning"

@@ -50,8 +50,8 @@ def test_process_uses_decomposed_cross_domain_workflow():
     assert all(step.duration_seconds is not None for step in result.tool_trace)
     assert result.tool_trace[0].tool == "standardize_against_normal"
     assert result.tool_trace[-1].tool == "process_diagnosis"
-    assert result.metadata["workflow_version"] == "2.0"
-    assert result.metadata["policy_version"] == "process-policy-v2"
+    assert result.metadata["workflow_version"] == "3.0"
+    assert result.metadata["policy_version"] == "process-policy-v3"
 
 
 def test_wind_scada_pipeline_localizes_persistent_shift():

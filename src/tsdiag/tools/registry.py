@@ -5,11 +5,15 @@ from ..detectors.residual_changepoint import residual_cusum
 from ..domain.wind_physics import physics_consistency_check
 from .change import change_point_detection, cross_sensor_relationships, rolling_statistics
 from .monitoring import (
+    arbitrate_dpca_cva,
     calibrated_pca_monitoring,
     calibrate_monitoring_config,
+    cva_monitoring,
     dpca_monitoring,
+    fit_cva,
     make_lagged_matrix,
     run_monitoring_method,
+    transform_cva,
 )
 from .multivariate import (
     contribution_analysis,
@@ -66,9 +70,13 @@ def default_tool_registry() -> ToolRegistry:
         "pca_monitoring": pca_monitoring,
         "calibrated_pca_monitoring": calibrated_pca_monitoring,
         "dpca_monitoring": dpca_monitoring,
+        "cva_monitoring": cva_monitoring,
+        "fit_cva": fit_cva,
+        "transform_cva": transform_cva,
         "make_lagged_matrix": make_lagged_matrix,
         "calibrate_monitoring_config": calibrate_monitoring_config,
         "run_monitoring_method": run_monitoring_method,
+        "arbitrate_dpca_cva": arbitrate_dpca_cva,
         "contribution_analysis": contribution_analysis,
         "stationarity_analysis": stationarity_analysis,
         "granger_causality": granger_causality,

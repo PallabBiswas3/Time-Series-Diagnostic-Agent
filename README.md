@@ -22,7 +22,7 @@ print(result.decision, result.detection, result.localization)
 | Domain | Executable baseline | Optional capability |
 | --- | --- | --- |
 | `bearing` | signal quality, spectral kurtosis, envelope analysis, fault-frequency matching | bearing geometry and speed metadata improve labeling |
-| `process` | PCA monitoring, contribution, onset, Granger and root-cause ranking | topology and fault catalog |
+| `process` | hybrid DPCA/CVA monitoring, CVA-SVM/FDA diagnosis, contribution, onset, Granger and root-cause ranking | topology and fault catalog |
 | `wind_scada` | robust normal behavior residuals, persistence and change points | supplied healthy reference and physics model |
 | `battery` | cell-to-pack voltage/temperature deviation, localization and risk | trained prognostic model |
 | `turbofan` | sensor trend screening, health index and linear RUL baseline | trained RUL model |
